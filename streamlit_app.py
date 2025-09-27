@@ -288,5 +288,5 @@ if 'test_results' in st.session_state and st.session_state.test_results:
     # It's better to plot actual request completion time if possible, but for simplicity
     # we'll just plot by index. For real-world, timestamp each request.
     df_plot = df.head(100).reset_index()
-    fig_scatter = px.line(df_plot, x="index", y="response_time_ms", 
+    fig_scatter = px.line(df_plot, x="index", y="response_time_ms",)
   
