@@ -1,10 +1,11 @@
-import streamlit as st
+    import streamlit as st
 import requests
 import time
 import pandas as pd
 import numpy as np
 import concurrent.futures
-import matplotlib.pyplot as plt
+# Matplotlib is imported but Plotly is preferred for Streamlit interactive charts
+# import matplotlib.pyplot as plt 
 import plotly.express as px
 
 # --- Configuration ---
@@ -139,6 +140,7 @@ def run_load_test(selected_endpoint_name, num_requests, concurrency, delay_per_r
             progress_bar.progress(progress)
             status_text.text(f"Requests initiated: {i+1}/{num_requests}")
 
+        # Process results as they complete
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
             try:
                 result = future.result()
@@ -146,9 +148,13 @@ def run_load_test(selected_endpoint_name, num_requests, concurrency, delay_per_r
             except Exception as exc:
                 st.error(f'Request generated an exception: {exc}')
             
-            # Update progress based on completed requests
-            # This is a bit tricky if requests finish out of order, but gives an idea
-            # progress_bar.progress((i + 1) / num_requests)
+            # This second progress bar update isn't strictly necessary visually
+            # if the first one already tracks initiation well, but can be useful
+            # to show completion progress for long-running individual requests.
+            # However, for simplicity and clearer UI, often one progress is enough.
+            # Keeping it commented out for now to avoid rapid updates potentially
+            # making the UI jumpy.
+            # progress_bar.progress((i + 1) / num_requests) 
             # status_text.text(f"Requests completed: {i+1}/{num_requests}")
 
     end_test_time = time.perf_counter()
@@ -172,9 +178,11 @@ selected_endpoint_name = st.sidebar.selectbox(
 )
 st.sidebar.markdown(f"**URL:** `{API_ENDPOINTS[selected_endpoint_name]}`")
 
+# Modified: Set max_value to 1,000,000 as requested
 num_requests = st.sidebar.number_input(
     "Number of Requests to Send",
     min_value=1,
+    max_value=1_000_000, # Capped at 1 Million requests
     value=100,
     step=10
 )
@@ -207,6 +215,11 @@ timeout_per_request = st.sidebar.number_input(
 st.sidebar.markdown("---")
 if st.sidebar.button("Start Load Test", type="primary"):
     if selected_endpoint_name and num_requests > 0 and concurrency > 0:
+        # Clear previous results if a new test starts
+        if 'test_results' in st.session_state:
+            del st.session_state['test_results']
+            del st.session_state['total_test_duration']
+        
         st.session_state.running_test = True
         st.session_state.test_results, st.session_state.total_test_duration = run_load_test(
             selected_endpoint_name,
@@ -217,7 +230,7 @@ if st.sidebar.button("Start Load Test", type="primary"):
         )
         st.session_state.running_test = False
     else:
-        st.sidebar.error("Please configure the test parameters correctly.")
+        st.sidebar.error("Please configure the test parameters correctly (Number of Requests, Concurrent Users must be > 0).")
 
 # --- Display Results ---
 if 'test_results' in st.session_state and st.session_state.test_results:
@@ -276,28 +289,4 @@ if 'test_results' in st.session_state and st.session_state.test_results:
     # we'll just plot by index. For real-world, timestamp each request.
     df_plot = df.head(100).reset_index()
     fig_scatter = px.line(df_plot, x="index", y="response_time_ms", 
-                          title="Response Time for First 100 Requests",
-                          labels={"index": "Request Order", "response_time_ms": "Response Time (ms)"},
-                          height=400)
-    st.plotly_chart(fig_scatter, use_container_width=True)
-    
-    st.subheader("Status Code Distribution")
-    status_counts = df['status_code'].fillna('Timeout/Error').astype(str).value_counts().reset_index()
-    status_counts.columns = ['Status Code', 'Count']
-    fig_pie = px.pie(status_counts, values='Count', names='Status Code', title='HTTP Status Code Distribution')
-    st.plotly_chart(fig_pie, use_container_width=True)
-
-    if failed_requests > 0:
-        st.subheader("Failed Request Details")
-        st.dataframe(df[~df['success']][['endpoint', 'status_code', 'error_message', 'response_time_ms']])
-
-    st.subheader("Raw Data (First 100 Entries)")
-    st.dataframe(df.head(100))
-
-# Disclaimer
-st.sidebar.markdown("---")
-st.sidebar.warning(
-    "**Disclaimer:** Use this tool responsibly. Excessive load testing without permission "
-    "can be harmful to the target server. Ensure you have the necessary authorization "
-    "before testing live production systems."
-)
+  
