@@ -1,1 +1,6 @@
 streamlit
+requests
+pandas
+matplotlib
+plotly
+locust # For a more advanced and scalable solution, though we'll start without it
