@@ -183,7 +183,7 @@ num_requests = st.sidebar.number_input(
     "Number of Requests to Send",
     min_value=1,
     max_value=1_000_000, # Capped at 1 Million requests
-    value=100000000000000000000000,
+    value=1000000,
     step=10
 )
 
