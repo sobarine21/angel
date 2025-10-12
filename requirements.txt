@@ -1,6 +1,9 @@
 streamlit
-requests
-pandas
-matplotlib
+kiteconnect
+supabase
 plotly
-locust # For a more advanced and scalable solution, though we'll start without it
+scikit-learn
+lightgbm
+ta
+yfinance
+matplotlib
