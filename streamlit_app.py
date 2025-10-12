@@ -81,7 +81,7 @@ def load_secrets():
     if errors:
         st.error(f"Missing required credentials in `.streamlit/secrets.toml`: {', '.join(errors)}.")
         st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_KITE_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n\n[supabase]\nurl=\"YOUR_SUPABASE_URL\"\nanon_key=\"YOUR_SUPABASE_ANON_KEY\"\n\n[auto_redirect]\nurl=\"YOUR_REDIRECT_URL\"\n```")
-        st.stop()  # Use st.stop() to halt script execution
+        st.stop()  # Use st.stop() to halt script execution if there are errors
     return kite_conf, supabase_conf, auto_redirect_conf["url"]
 
 KITE_CREDENTIALS, SUPABASE_CREDENTIALS, AUTO_REDIRECT_URL = load_secrets()
