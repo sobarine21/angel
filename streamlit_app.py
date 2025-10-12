@@ -81,7 +81,7 @@ def load_secrets():
     if errors:
         st.error(f"Missing required credentials in `.streamlit/secrets.toml`: {', '.join(errors)}.")
         st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_KITE_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n\n[supabase]\nurl=\"YOUR_SUPABASE_URL\"\nanon_key=\"YOUR_SUPABASE_ANON_KEY\"\n\n[auto_redirect]\nurl=\"YOUR_REDIRECT_URL\"\n```")
-        st.stop()
+        st.stop()  # Use st.stop() to halt script execution
     return kite_conf, supabase_conf, auto_redirect_conf["url"]
 
 KITE_CREDENTIALS, SUPABASE_CREDENTIALS, AUTO_REDIRECT_URL = load_secrets()
@@ -260,13 +260,9 @@ with st.sidebar:
                     else:
                         st.error(f"Failed to save user profile: {insert_response.data}")
 
-                # Fetch and save order history (example for last 7 days)
-                seven_days_ago = datetime.now() - timedelta(days=7)
+                # Fetch and save order history (example for current day)
                 try:
-                    # Kite API fetches orders and trades for the current day by default.
-                    # For historical data beyond the current day, you would need to iterate or specify date ranges if the API supports it.
-                    # For now, we'll fetch current day's orders and trades.
-                    order_history = kite_client_authenticated.orders() 
+                    order_history = kite_client_authenticated.orders()
                     trades_history = kite_client_authenticated.trades() 
 
                     # Process and save orders
@@ -369,6 +365,7 @@ tab_multi_asset = tabs[7] if len(tabs) > 7 else None
 tab_custom_index = tabs[8] if len(tabs) > 8 else None
 tab_ws = tabs[9] if len(tabs) > 9 else None
 tab_inst = tabs[10] if len(tabs) > 10 else None
+
 
 # --- Tab Logic Functions ---
 # Placeholder functions for tabs that are not implemented in this minimal version
