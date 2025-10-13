@@ -113,15 +113,13 @@ def get_authenticated_kite_client(api_key: str | None, access_token: str | None)
         return k_instance
     return None
 
-def safe_get_numeric(data, key, default_value=None): # Changed default to None
+def safe_get_numeric(data, key, default_value=None):
     """Safely retrieve a numerical value. Returns default_value if None, non-numeric, or not present."""
     value = data.get(key)
     if value is None:
         return default_value # Return None if original value is None
     try:
-        # Attempt to convert to float first for broader compatibility
         float_val = float(value)
-        # If it's a whole number, convert to int. Otherwise, keep as float.
         if float_val.is_integer():
             return int(float_val)
         return float_val
@@ -248,7 +246,7 @@ with st.sidebar:
                     "email": profile_data.get("email"),
                     "user_name": profile_data.get("user_name"),
                     "broker": "KiteConnect",
-                    # Use safe_get_numeric with a default of 0 for margins
+                    # Use safe_get_numeric with a default of 0 for margins, as these are typically financial values
                     "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value=0),
                     "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value=0),
                     "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value=0),
@@ -291,14 +289,22 @@ with st.sidebar:
                                 "variety": order["variety"],
                                 "validity": order["validity"],
                                 "transaction_type": order["transaction_type"],
-                                # Use safe_get_numeric with a default of 0 for these fields
-                                "quantity": safe_get_numeric(order, "quantity", default_value=0),
-                                "price": safe_get_numeric(order, "price", default_value=0.0), # Default to float 0.0
-                                "trigger_price": safe_get_numeric(order, "trigger_price", default_value=0.0), # Default to float 0.0
+                                # Use safe_get_numeric. Consider the Supabase schema (NULL vs. 0)
+                                # If DB column is NOT NULL, use default 0/0.0
+                                # If DB column allows NULL, default_value=None is fine.
+                                "quantity": safe_get_numeric(order, "quantity", default_value=0), # Assuming quantity is never None and should be 0 if missing
+                                "price": safe_get_numeric(order, "price", default_value=None), # Allow price to be None if it is None from API
+                                "trigger_price": safe_get_numeric(order, "trigger_price", default_value=None), # Allow trigger_price to be None
                                 "placed_at": order["order_timestamp"],
                                 "product": order["product"],
                                 "created_at": datetime.now().isoformat()
                             }
+                            # Now, handle potential None values before Supabase insert/update if columns are NOT NULL
+                            # If your Supabase columns are NOT NULL for price/trigger_price, you might need to set defaults here
+                            # For example, if price is NOT NULL and safe_get_numeric returned None:
+                            # if order_data["price"] is None: order_data["price"] = 0.0
+                            # if order_data["trigger_price"] is None: order_data["trigger_price"] = 0.0
+
                             existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                             if existing_order_query.data:
                                 update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
@@ -319,13 +325,17 @@ with st.sidebar:
                                 "symbol": trade.get("tradingsymbol"),
                                 "exchange": trade["exchange"],
                                 "transaction_type": trade["transaction_type"],
-                                # Use safe_get_numeric with a default of 0
+                                # Use safe_get_numeric
                                 "quantity": safe_get_numeric(trade, "quantity", default_value=0),
-                                "price": safe_get_numeric(trade, "price", default_value=0.0), # Default to float 0.0
+                                "price": safe_get_numeric(trade, "price", default_value=None), # Allow price to be None
                                 "executed_at": trade["execution_time"],
                                 "product": trade["product"],
                                 "created_at": datetime.now().isoformat()
                             }
+                            # Similar check for NOT NULL columns if price/quantity are required to be non-null
+                            # if trade_data["price"] is None: trade_data["price"] = 0.0
+                            # if trade_data["quantity"] is None: trade_data["quantity"] = 0
+
                             existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                             if existing_trade_query.data:
                                 update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
@@ -401,7 +411,6 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
             margins = kite_client.margins()
             st.write(f"**User Name:** {profile.get('user_name', 'N/A')}")
             st.write(f"**Email:** {profile.get('email', 'N/A')}")
-            # Using safe_get_numeric here too for consistency
             st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', 0):,.2f}")
             st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', 0):,.2f}")
         except Exception as e:
@@ -510,47 +519,3 @@ if tab_ws:
     with tab_ws: render_websocket_tab(k)
 if tab_inst:
     with tab_inst: render_instruments_utils_tab(k, api_key, access_token)
-```
-
-### Key Changes and Reasoning:
-
-1.  **`safe_get_numeric` Default Value**:
-    *   I changed the `default_value` in `safe_get_numeric` from `0` to `None`.
-    *   **Reasoning**: When Supabase inserts data, it's often better to send `NULL` for fields that are genuinely missing or `None` rather than `0`. This aligns better with the database schema and avoids potential issues if `0` has a specific meaning that is different from "missing data". Your Supabase tables should ideally allow `NULL` for numeric columns that might not always have a value (e.g., `trigger_price` if it's not set). If your tables are defined as `NOT NULL` for these columns, then `0` might be a safer default, but the error suggests `NoneType` is the problem. Let's try `None` first.
-
-2.  **Specific Default Values for Fields**:
-    *   For `order_data` and `trade_data`, when calling `safe_get_numeric`:
-        *   `quantity`: `default_value=0` (Quantities are usually integers, and `0` is a sensible default if missing).
-        *   `price`, `trigger_price`: `default_value=0.0` (Prices can be floats, so `0.0` is a reasonable default. If your DB column is `numeric` or `decimal`, this is fine. If it's `integer`, you'd use `0`).
-    *   For `user_profile_info` (margins): `default_value=0`.
-    *   **Reasoning**: This allows you to be more precise about the default for each type of numeric field.
-
-3.  **Where the Comparison Might Happen**:
-    The error `'>' not supported between instances of 'NoneType' and 'int'` strongly suggests that somewhere in the code, a comparison like `some_numeric_variable > some_integer` is happening, and `some_numeric_variable` is `None`.
-
-    *   **My Best Guess**: It's highly likely that within the Kite API response for `orders()` or `trades()`, a field like `price`, `quantity`, or `trigger_price` is sometimes `None`. The `safe_get_numeric` function, with `default_value=None`, will correctly return `None` in these cases.
-    *   The issue might arise if *after* `safe_get_numeric` returns `None`, there's some other logic that implicitly assumes it's a number and tries to compare it. For example, if you had a check like `if order['quantity'] > 0: ...` and `order['quantity']` was `None`.
-    *   However, in the provided code, the direct assignment to `order_data` uses `safe_get_numeric`. This means `order_data['quantity']` will be `0` (if `default_value=0` was used). If it's `None` (if `default_value=None` was used), and the database column is `NOT NULL`, Supabase might throw an error *during insert*.
-
-**Troubleshooting Steps if the error persists:**
-
-1.  **Check your Supabase Table Schema:**
-    *   Go to your Supabase project -> **Database** -> **Table Editor**.
-    *   Inspect `public.order_history` and `public.trade_history`.
-    *   Are `quantity`, `price`, and `trigger_price` columns set to `NOT NULL`?
-    *   If they are `NOT NULL`, then `safe_get_numeric` *must* return a number (like `0` or `0.0`), not `None`. In this case, you should explicitly set `default_value=0` or `default_value=0.0` in your `safe_get_numeric` calls for these fields.
-    *   If they *can* be `NULL`, then returning `None` from `safe_get_numeric` is fine for the Python side, and Supabase will correctly store them as `NULL`.
-
-2.  **Look for Implicit Comparisons in Your Code**:
-    Although the `order_data` and `trade_data` assignments are now safer, there might be other parts of your application (perhaps in the other tabs you haven't fully implemented yet, or in logic that runs *after* this data fetching) that perform comparisons. If the error persists, you'll need to debug line by line or add more print statements to see *exactly* when the `NoneType` and `int` are involved in a comparison.
-
-3.  **Consider the "Data fetching" part of the error**:
-    This implies the error might not be in the *saving* to Supabase, but in the *processing* of the Kite data itself. For example, if there's a function that takes the raw Kite order dictionary and tries to compute something based on `order['price'] > 100` and `order['price']` is `None`.
-
-**Actionable Advice:**
-
-*   **If your Supabase numeric columns are `NOT NULL`**: Revert `safe_get_numeric`'s default to `0` or `0.0` where appropriate, and ensure you are using those defaults in the code.
-*   **If your Supabase numeric columns allow `NULL`**: The current code with `default_value=None` should be fine on the Python side. The error might be in a very specific comparison you've made elsewhere.
-
-Given the error message, I'd recommend trying the version with `default_value=0` or `default_value=0.0` for `quantity`, `price`, and `trigger_price` as the most direct fix if your database columns are `NOT NULL`.
-26.7s
