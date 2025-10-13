@@ -567,4 +567,4 @@ access_token = st.session_state["kite_access_token"]
 
 if tab_dashboard:
     with tab_dashboard:
-        render_dashboard_tab(k, api_key, access
+        render_dashboard_tab(k, api_key, access)
