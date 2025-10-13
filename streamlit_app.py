@@ -113,15 +113,16 @@ def get_authenticated_kite_client(api_key: str | None, access_token: str | None)
         return k_instance
     return None
 
-def safe_get_numeric(data, key, default_value=None):
+def safe_get_numeric(data, key, default_value_if_none_or_error=0.0):
     """
     Safely retrieve a numerical value.
-    Returns default_value if the key is not present, the value is None, or conversion to float fails.
+    Returns default_value_if_none_or_error if the key is not present, the value is None,
+    or conversion to float fails.
     If successful, converts to int if the float is an integer, otherwise returns float.
     """
     value = data.get(key)
     if value is None:
-        return default_value # Return default if original value is None
+        return default_value_if_none_or_error # Return the provided default if original value is None
 
     try:
         float_val = float(value)
@@ -131,7 +132,7 @@ def safe_get_numeric(data, key, default_value=None):
         return float_val
     except (ValueError, TypeError):
         # If conversion to float fails, return the default value
-        return default_value
+        return default_value_if_none_or_error
 
 
 # --- Sidebar: Kite Login ---
@@ -266,11 +267,11 @@ with st.sidebar:
                     "email": profile_data.get("email"),
                     "user_name": profile_data.get("user_name"),
                     "broker": "KiteConnect",
-                    # Use safe_get_numeric with a default of 0 for margins, as these are typically financial values
-                    "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value=0.0), # Use float default
-                    "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value=0.0), # Use float default
-                    "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value=0.0), # Use float default
-                    "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall", default_value=0.0), # Use float default
+                    # Use safe_get_numeric with a default of 0.0 for margins, as these are typically financial values
+                    "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
+                    "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
+                    "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
+                    "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
                     "fetched_at": datetime.now().isoformat()
                 }
                 
@@ -301,13 +302,13 @@ with st.sidebar:
                         for order in order_history:
                             # Ensure numerical fields have defaults if they might be None from API
                             # and your Supabase columns are NOT NULL. Using 0.0 for prices, 0 for quantity.
-                            order_quantity = safe_get_numeric(order, "quantity", default_value=0)
+                            order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0) # Default quantity to 0 if missing/invalid
                             # Ensure quantity is an integer
                             if not isinstance(order_quantity, int):
                                 order_quantity = int(order_quantity) if order_quantity is not None else 0
 
-                            order_price = safe_get_numeric(order, "price", default_value=0.0)
-                            order_trigger_price = safe_get_numeric(order, "trigger_price", default_value=0.0)
+                            order_price = safe_get_numeric(order, "price", default_value_if_none_or_error=0.0) # Default price to 0.0
+                            order_trigger_price = safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0) # Default trigger_price to 0.0
 
                             order_data = {
                                 "user_id": st.session_state["user_id"],
@@ -346,12 +347,11 @@ with st.sidebar:
                         for trade in trades_history:
                             # Ensure numerical fields have defaults if they might be None from API
                             # and your Supabase columns are NOT NULL. Using 0.0 for price, 0 for quantity.
-                            trade_quantity = safe_get_numeric(trade, "quantity", default_value=0)
-                            # Ensure quantity is an integer
+                            trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0) # Default quantity to 0
                             if not isinstance(trade_quantity, int):
                                 trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
 
-                            trade_price = safe_get_numeric(trade, "price", default_value=0.0)
+                            trade_price = safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0) # Default price to 0.0
 
                             trade_data = {
                                 "user_id": st.session_state["user_id"],
@@ -453,8 +453,8 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
             st.write(f"**User Name:** {profile.get('user_name', 'N/A')}")
             st.write(f"**Email:** {profile.get('email', 'N/A')}")
             # Using safe_get_numeric for robust display, with default 0.0 if missing/invalid
-            st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', default_value=0.0):,.2f}")
-            st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value=0.0):,.2f}")
+            st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
+            st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
         except Exception as e:
             st.error(f"Could not fetch broker details: {e}")
             
