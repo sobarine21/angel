@@ -299,20 +299,20 @@ with st.sidebar:
 
                     if order_history:
                         for order in order_history:
-                            # Ensure numerical fields are always numerical (int or float)
-                            # Use explicit None if Supabase column is nullable and None is desired.
-                            # Otherwise, use a safe default (0 or 0.0).
-                            
+                            # Process numerical fields carefully
                             order_quantity_raw = order.get("quantity")
-                            order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0) # Default to 0
+                            order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0)
                             if not isinstance(order_quantity, int): # Ensure quantity is an integer
                                 order_quantity = int(order_quantity) if order_quantity is not None else 0
 
                             order_price_raw = order.get("price")
-                            order_price = safe_get_numeric(order, "price", default_value_if_none_or_error=0.0) # Default to 0.0
+                            # If raw price is None, pass None to Supabase (assuming nullable column).
+                            # Otherwise, use safe_get_numeric.
+                            order_price = None if order_price_raw is None else safe_get_numeric(order, "price", default_value_if_none_or_error=0.0)
                             
                             order_trigger_price_raw = order.get("trigger_price")
-                            order_trigger_price = safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0) # Default to 0.0
+                            # If raw trigger_price is None, pass None to Supabase.
+                            order_trigger_price = None if order_trigger_price_raw is None else safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0)
 
                             order_data = {
                                 "user_id": st.session_state["user_id"],
@@ -326,8 +326,8 @@ with st.sidebar:
                                 "validity": order["validity"],
                                 "transaction_type": order["transaction_type"],
                                 "quantity": order_quantity,
-                                "price": order_price if order_price_raw is not None else None, # Send None if raw was None and column is nullable
-                                "trigger_price": order_trigger_price if order_trigger_price_raw is not None else None, # Send None if raw was None and column is nullable
+                                "price": order_price,
+                                "trigger_price": order_trigger_price,
                                 "placed_at": order["order_timestamp"],
                                 "product": order["product"],
                                 "created_at": datetime.now().isoformat()
@@ -346,14 +346,15 @@ with st.sidebar:
                     
                     if trades_history:
                         for trade in trades_history:
-                            # Ensure numerical fields are always numerical (int or float)
+                            # Process numerical fields carefully
                             trade_quantity_raw = trade.get("quantity")
                             trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0) # Default quantity to 0
                             if not isinstance(trade_quantity, int): # Ensure quantity is an integer
                                 trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
 
                             trade_price_raw = trade.get("price")
-                            trade_price = safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0) # Default price to 0.0
+                            # If raw price is None, pass None to Supabase (assuming nullable column).
+                            trade_price = None if trade_price_raw is None else safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0)
 
                             trade_data = {
                                 "user_id": st.session_state["user_id"],
@@ -363,7 +364,7 @@ with st.sidebar:
                                 "exchange": trade["exchange"],
                                 "transaction_type": trade["transaction_type"],
                                 "quantity": trade_quantity,
-                                "price": trade_price if trade_price_raw is not None else None, # Send None if raw was None and column is nullable
+                                "price": trade_price,
                                 "executed_at": trade["execution_time"],
                                 "product": trade["product"],
                                 "created_at": datetime.now().isoformat()
