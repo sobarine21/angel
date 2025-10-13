@@ -223,7 +223,7 @@ with st.sidebar:
                 kite_client_authenticated = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
                 if not kite_client_authenticated:
                     st.error("Kite client not authenticated. Please re-login.")
-                    return
+                    st.stop() # Use st.stop() to halt further execution in this block
                 
                 profile_data = kite_client_authenticated.profile()
                 margins_data = kite_client_authenticated.margins()
@@ -248,17 +248,17 @@ with st.sidebar:
                     # Update existing profile
                     profile_id_to_update = existing_profile_query.data[0]['id']
                     update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
-                    if update_response.data:
+                    if update_response.data is not None and update_response.count > 0: # Check for successful update
                         st.success("User profile and fund data updated successfully in Supabase!")
                     else:
-                        st.error(f"Failed to update user profile: {update_response.data}")
+                        st.error(f"Failed to update user profile. Response: {update_response.data}")
                 else:
                     # Insert new profile
                     insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
-                    if insert_response.data:
+                    if insert_response.data is not None and insert_response.count > 0: # Check for successful insert
                         st.success("User profile and fund data saved successfully to Supabase!")
                     else:
-                        st.error(f"Failed to save user profile: {insert_response.data}")
+                        st.error(f"Failed to save user profile. Response: {insert_response.data}")
 
                 # Fetch and save order history (example for current day)
                 try:
@@ -289,10 +289,14 @@ with st.sidebar:
                             # Upsert logic: Check if order_id exists and update, otherwise insert
                             existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                             if existing_order_query.data:
-                                supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
+                                update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
+                                if update_order_response.data is None or update_order_response.count == 0:
+                                    st.warning(f"Could not update order {order_data['order_id']}.")
                             else:
-                                supabase.table("order_history").insert(order_data).execute()
-                        st.success(f"Saved/Updated {len(order_history)} orders to Supabase.")
+                                insert_order_response = supabase.table("order_history").insert(order_data).execute()
+                                if insert_order_response.data is None or insert_order_response.count == 0:
+                                    st.warning(f"Could not insert order {order_data['order_id']}.")
+                        st.success(f"Processed {len(order_history)} orders. Check Supabase for details.")
                     
                     # Process and save trades
                     if trades_history:
@@ -313,10 +317,14 @@ with st.sidebar:
                             # Upsert logic for trades
                             existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                             if existing_trade_query.data:
-                                supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
+                                update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
+                                if update_trade_response.data is None or update_trade_response.count == 0:
+                                    st.warning(f"Could not update trade {trade_data['trade_id']}.")
                             else:
-                                supabase.table("trade_history").insert(trade_data).execute()
-                        st.success(f"Saved/Updated {len(trades_history)} trades to Supabase.")
+                                insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
+                                if insert_trade_response.data is None or insert_trade_response.count == 0:
+                                    st.warning(f"Could not insert trade {trade_data['trade_id']}.")
+                        st.success(f"Processed {len(trades_history)} trades. Check Supabase for details.")
 
                     st.session_state["broker_data_fetched_and_saved"] = True # Flag to trigger redirect
 
