@@ -44,9 +44,9 @@ if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 if "saved_indexes" not in st.session_state:
     st.session_state["saved_indexes"] = []
-if "current_calculated_index_data" not in st.session_state: # To store current CSV's index data
+if "current_calculated_index_data" not in st.session_state:
     st.session_state["current_calculated_index_data"] = None
-if "current_calculated_index_history" not in st.session_state: # To store historical index values for plotting
+if "current_calculated_index_history" not in st.session_state:
     st.session_state["current_calculated_index_history"] = pd.DataFrame()
 if "kt_ticker" not in st.session_state:
     st.session_state["kt_ticker"] = None
@@ -60,9 +60,9 @@ if "kt_live_prices" not in st.session_state:
     st.session_state["kt_live_prices"] = pd.DataFrame(columns=['timestamp', 'last_price', 'instrument_token'])
 if "kt_status_message" not in st.session_state:
     st.session_state["kt_status_message"] = "Not started"
-if "_rerun_ws" not in st.session_state: # Flag for WebSocket UI updates
+if "_rerun_ws" not in st.session_state:
     st.session_state["_rerun_ws"] = False
-if "broker_data_fetched_and_saved" not in st.session_state: # Flag for auto redirect
+if "broker_data_fetched_and_saved" not in st.session_state:
     st.session_state["broker_data_fetched_and_saved"] = False
 
 # --- Load Credentials from Streamlit Secrets ---
@@ -122,17 +122,26 @@ def safe_get_numeric(data, key, default_value_if_none_or_error=0.0):
     """
     value = data.get(key)
     if value is None:
-        return default_value_if_none_or_error # Return the provided default if original value is None
+        return default_value_if_none_or_error
 
     try:
         float_val = float(value)
-        # Check if the value is essentially an integer
         if float_val.is_integer():
             return int(float_val)
         return float_val
     except (ValueError, TypeError):
-        # If conversion to float fails, return the default value
         return default_value_if_none_or_error
+
+def check_supabase_response_success(response):
+    """
+    Check if a Supabase response was successful.
+    Returns True if data exists and is not empty, False otherwise.
+    """
+    if response is None:
+        return False
+    if hasattr(response, 'data') and response.data:
+        return True
+    return False
 
 
 # --- Sidebar: Kite Login ---
@@ -172,7 +181,6 @@ with st.sidebar:
     
     def _refresh_supabase_session():
         try:
-            # Ensure Supabase client is initialized before calling auth methods
             if not supabase:
                 st.session_state["user_session"] = None
                 st.session_state["user_id"] = None
@@ -186,12 +194,8 @@ with st.sidebar:
                 st.session_state["user_session"] = None
                 st.session_state["user_id"] = None
         except Exception as e:
-            # Handle cases where Supabase might not be initialized or other auth errors
             st.session_state["user_session"] = None
             st.session_state["user_id"] = None
-            # Optionally log this error for debugging
-            # print(f"Error refreshing Supabase session: {e}")
-
 
     _refresh_supabase_session()
 
@@ -250,7 +254,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 3. Broker Data Fetching & Auto Redirect")
     if st.session_state["kite_access_token"] and st.session_state["user_session"]:
-        st.success("Kite and Supabase Authenticated. Fetching Broker Data...")
+        st.success("Kite and Supabase Authenticated. Ready to fetch Broker Data.")
         
         if st.button("Fetch & Save Profile Data", key="fetch_save_broker_data_btn"):
             try:
@@ -259,15 +263,15 @@ with st.sidebar:
                     st.error("Kite client not authenticated. Please re-login.")
                     st.stop()
                 
-                profile_data = kite_client_authenticated.profile()
-                margins_data = kite_client_authenticated.margins()
+                with st.spinner("Fetching profile and margins..."):
+                    profile_data = kite_client_authenticated.profile()
+                    margins_data = kite_client_authenticated.margins()
                 
                 user_profile_info = {
                     "user_id": st.session_state["user_id"],
                     "email": profile_data.get("email"),
                     "user_name": profile_data.get("user_name"),
                     "broker": "KiteConnect",
-                    # Use safe_get_numeric with a default of 0.0 for margins
                     "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
                     "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
                     "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
@@ -276,117 +280,147 @@ with st.sidebar:
                 }
                 
                 # Save to Supabase
-                existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
-                
-                if existing_profile_query.data:
-                    profile_id_to_update = existing_profile_query.data[0]['id']
-                    update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
-                    if update_response.data is not None and update_response.count > 0:
-                        st.success("User profile and fund data updated successfully in Supabase!")
+                with st.spinner("Saving profile to Supabase..."):
+                    existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
+                    
+                    if existing_profile_query.data:
+                        profile_id_to_update = existing_profile_query.data[0]['id']
+                        update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
+                        if check_supabase_response_success(update_response):
+                            st.success("User profile and fund data updated successfully in Supabase!")
+                        else:
+                            st.error(f"Failed to update user profile. Response: {update_response}")
                     else:
-                        st.error(f"Failed to update user profile. Response: {update_response.data}")
-                else:
-                    insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
-                    if insert_response.data is not None and insert_response.count > 0:
-                        st.success("User profile and fund data saved successfully to Supabase!")
-                    else:
-                        st.error(f"Failed to save user profile. Response: {insert_response.data}")
+                        insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
+                        if check_supabase_response_success(insert_response):
+                            st.success("User profile and fund data saved successfully to Supabase!")
+                        else:
+                            st.error(f"Failed to save user profile. Response: {insert_response}")
 
                 # Fetch and save order history
                 try:
-                    order_history = kite_client_authenticated.orders()
-                    trades_history = kite_client_authenticated.trades() 
+                    with st.spinner("Fetching order and trade history..."):
+                        order_history = kite_client_authenticated.orders()
+                        trades_history = kite_client_authenticated.trades()
 
+                    orders_processed = 0
+                    orders_failed = 0
+                    
                     if order_history:
-                        for order in order_history:
-                            # Ensure numerical fields are always numerical (int or float)
-                            # Use explicit None if Supabase column is nullable and None is desired.
-                            # Otherwise, use a safe default (0 or 0.0).
-                            
-                            order_quantity_raw = order.get("quantity")
-                            order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0) # Default to 0
-                            if not isinstance(order_quantity, int): # Ensure quantity is an integer
-                                order_quantity = int(order_quantity) if order_quantity is not None else 0
+                        with st.spinner(f"Processing {len(order_history)} orders..."):
+                            for order in order_history:
+                                try:
+                                    order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0)
+                                    if not isinstance(order_quantity, int):
+                                        order_quantity = int(order_quantity) if order_quantity is not None else 0
 
-                            order_price_raw = order.get("price")
-                            order_price = safe_get_numeric(order, "price", default_value_if_none_or_error=0.0) # Default to 0.0
-                            
-                            order_trigger_price_raw = order.get("trigger_price")
-                            order_trigger_price = safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0) # Default to 0.0
+                                    order_price_raw = order.get("price")
+                                    order_price = safe_get_numeric(order, "price", default_value_if_none_or_error=0.0)
+                                    
+                                    order_trigger_price_raw = order.get("trigger_price")
+                                    order_trigger_price = safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0)
 
-                            order_data = {
-                                "user_id": st.session_state["user_id"],
-                                "order_id": order["order_id"],
-                                "parent_order_id": order.get("parent_order_id"),
-                                "status": order["status"],
-                                "symbol": order.get("tradingsymbol"),
-                                "exchange": order["exchange"],
-                                "order_type": order["order_type"],
-                                "variety": order["variety"],
-                                "validity": order["validity"],
-                                "transaction_type": order["transaction_type"],
-                                "quantity": order_quantity,
-                                "price": order_price if order_price_raw is not None else None, # Send None if raw was None and column is nullable
-                                "trigger_price": order_trigger_price if order_trigger_price_raw is not None else None, # Send None if raw was None and column is nullable
-                                "placed_at": order["order_timestamp"],
-                                "product": order["product"],
-                                "created_at": datetime.now().isoformat()
-                            }
-                            
-                            existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
-                            if existing_order_query.data:
-                                update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
-                                if update_order_response.data is None or update_order_response.count == 0:
-                                    st.warning(f"Could not update order {order_data['order_id']}.")
-                            else:
-                                insert_order_response = supabase.table("order_history").insert(order_data).execute()
-                                if insert_order_response.data is None or insert_order_response.count == 0:
-                                    st.warning(f"Could not insert order {order_data['order_id']}.")
-                        st.success(f"Processed {len(order_history)} orders. Check Supabase for details.")
+                                    order_data = {
+                                        "user_id": st.session_state["user_id"],
+                                        "order_id": order["order_id"],
+                                        "parent_order_id": order.get("parent_order_id"),
+                                        "status": order["status"],
+                                        "symbol": order.get("tradingsymbol"),
+                                        "exchange": order["exchange"],
+                                        "order_type": order["order_type"],
+                                        "variety": order["variety"],
+                                        "validity": order["validity"],
+                                        "transaction_type": order["transaction_type"],
+                                        "quantity": order_quantity,
+                                        "price": order_price if order_price_raw is not None else None,
+                                        "trigger_price": order_trigger_price if order_trigger_price_raw is not None else None,
+                                        "placed_at": order["order_timestamp"],
+                                        "product": order["product"],
+                                        "created_at": datetime.now().isoformat()
+                                    }
+                                    
+                                    existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
+                                    if existing_order_query.data:
+                                        update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
+                                        if check_supabase_response_success(update_order_response):
+                                            orders_processed += 1
+                                        else:
+                                            orders_failed += 1
+                                    else:
+                                        insert_order_response = supabase.table("order_history").insert(order_data).execute()
+                                        if check_supabase_response_success(insert_order_response):
+                                            orders_processed += 1
+                                        else:
+                                            orders_failed += 1
+                                except Exception as order_error:
+                                    orders_failed += 1
+                                    st.warning(f"Error processing order {order.get('order_id', 'unknown')}: {order_error}")
+                        
+                        if orders_processed > 0:
+                            st.success(f"Successfully processed {orders_processed} orders.")
+                        if orders_failed > 0:
+                            st.warning(f"Failed to process {orders_failed} orders.")
+                    
+                    trades_processed = 0
+                    trades_failed = 0
                     
                     if trades_history:
-                        for trade in trades_history:
-                            # Ensure numerical fields are always numerical (int or float)
-                            trade_quantity_raw = trade.get("quantity")
-                            trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0) # Default quantity to 0
-                            if not isinstance(trade_quantity, int): # Ensure quantity is an integer
-                                trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
+                        with st.spinner(f"Processing {len(trades_history)} trades..."):
+                            for trade in trades_history:
+                                try:
+                                    trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0)
+                                    if not isinstance(trade_quantity, int):
+                                        trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
 
-                            trade_price_raw = trade.get("price")
-                            trade_price = safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0) # Default price to 0.0
+                                    trade_price_raw = trade.get("price")
+                                    trade_price = safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0)
 
-                            trade_data = {
-                                "user_id": st.session_state["user_id"],
-                                "trade_id": trade["trade_id"],
-                                "order_id": trade["order_id"],
-                                "symbol": trade.get("tradingsymbol"),
-                                "exchange": trade["exchange"],
-                                "transaction_type": trade["transaction_type"],
-                                "quantity": trade_quantity,
-                                "price": trade_price if trade_price_raw is not None else None, # Send None if raw was None and column is nullable
-                                "executed_at": trade["execution_time"],
-                                "product": trade["product"],
-                                "created_at": datetime.now().isoformat()
-                            }
-                            
-                            existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
-                            if existing_trade_query.data:
-                                update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
-                                if update_trade_response.data is None or update_trade_response.count == 0:
-                                    st.warning(f"Could not update trade {trade_data['trade_id']}.")
-                            else:
-                                insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
-                                if insert_trade_response.data is None or insert_trade_response.count == 0:
-                                    st.warning(f"Could not insert trade {trade_data['trade_id']}.")
-                        st.success(f"Processed {len(trades_history)} trades. Check Supabase for details.")
+                                    trade_data = {
+                                        "user_id": st.session_state["user_id"],
+                                        "trade_id": trade["trade_id"],
+                                        "order_id": trade["order_id"],
+                                        "symbol": trade.get("tradingsymbol"),
+                                        "exchange": trade["exchange"],
+                                        "transaction_type": trade["transaction_type"],
+                                        "quantity": trade_quantity,
+                                        "price": trade_price if trade_price_raw is not None else None,
+                                        "executed_at": trade["execution_time"],
+                                        "product": trade["product"],
+                                        "created_at": datetime.now().isoformat()
+                                    }
+                                    
+                                    existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
+                                    if existing_trade_query.data:
+                                        update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
+                                        if check_supabase_response_success(update_trade_response):
+                                            trades_processed += 1
+                                        else:
+                                            trades_failed += 1
+                                    else:
+                                        insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
+                                        if check_supabase_response_success(insert_trade_response):
+                                            trades_processed += 1
+                                        else:
+                                            trades_failed += 1
+                                except Exception as trade_error:
+                                    trades_failed += 1
+                                    st.warning(f"Error processing trade {trade.get('trade_id', 'unknown')}: {trade_error}")
+                        
+                        if trades_processed > 0:
+                            st.success(f"Successfully processed {trades_processed} trades.")
+                        if trades_failed > 0:
+                            st.warning(f"Failed to process {trades_failed} trades.")
 
                     st.session_state["broker_data_fetched_and_saved"] = True
+                    st.success("✅ All broker data fetched and saved successfully!")
 
                 except Exception as e:
                     st.error(f"Error fetching or saving order/trade history: {e}")
 
             except Exception as e:
                 st.error(f"An error occurred during data fetching or saving: {e}")
+                import traceback
+                st.error(f"Traceback: {traceback.format_exc()}")
     else:
         st.info("Please login to Kite and Supabase to enable Broker Data Fetching.")
 
@@ -396,7 +430,6 @@ with st.sidebar:
     
     if st.session_state.get("broker_data_fetched_and_saved"):
         st.info("Data fetched and saved. Redirecting in 5 seconds...")
-        # Using markdown to inject JavaScript for redirection
         st.markdown(f'<script>setTimeout(() => {{window.location.href = "{AUTO_REDIRECT_URL}";}}, 5000);</script>', unsafe_allow_html=True)
     else:
         st.info("Auto-redirect will occur after successful data fetch and save.")
@@ -406,7 +439,6 @@ with st.sidebar:
 k = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
 
 # --- Tab Definitions ---
-# Dynamically create tabs based on authentication status
 tabs_list = ["Dashboard"]
 if k and st.session_state["user_session"]:
     tabs_list.extend([
@@ -417,7 +449,6 @@ if k and st.session_state["user_session"]:
 
 tabs = st.tabs(tabs_list)
 
-# Assign tab objects for easier access
 tab_dashboard = tabs[0]
 tab_portfolio = tabs[1] if len(tabs) > 1 else None
 tab_orders = tabs[2] if len(tabs) > 2 else None
@@ -432,8 +463,6 @@ tab_inst = tabs[10] if len(tabs) > 10 else None
 
 
 # --- Tab Rendering Functions ---
-# Placeholder functions for each tab's content.
-# These would contain the actual UI elements and logic for each section.
 
 def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None, supabase_client: Client | None):
     st.header("Dashboard")
@@ -451,7 +480,6 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
             margins = kite_client.margins()
             st.write(f"**User Name:** {profile.get('user_name', 'N/A')}")
             st.write(f"**Email:** {profile.get('email', 'N/A')}")
-            # Using safe_get_numeric for robust display, with default 0.0 if missing/invalid
             st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
             st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
         except Exception as e:
@@ -537,38 +565,6 @@ def render_instruments_utils_tab(kite_client: KiteConnect | None, api_key: str |
 api_key = KITE_CREDENTIALS["api_key"]
 access_token = st.session_state["kite_access_token"]
 
-# Render tabs based on authentication status and availability
 if tab_dashboard:
     with tab_dashboard:
-        render_dashboard_tab(k, api_key, access_token, supabase)
-
-if tab_portfolio:
-    with tab_portfolio:
-        render_portfolio_tab(k)
-if tab_orders:
-    with tab_orders:
-        render_orders_tab(k)
-if tab_market:
-    with tab_market:
-        render_market_historical_tab(k, api_key, access_token)
-if tab_ml:
-    with tab_ml:
-        render_ml_analysis_tab(k, api_key, access_token)
-if tab_risk:
-    with tab_risk:
-        render_risk_stress_testing_tab(k)
-if tab_performance:
-    with tab_performance:
-        render_performance_analysis_tab(k)
-if tab_multi_asset:
-    with tab_multi_asset:
-        render_multi_asset_analysis_tab(k, api_key, access_token)
-if tab_custom_index:
-    with tab_custom_index:
-        render_custom_index_tab(k, supabase, api_key, access_token)
-if tab_ws:
-    with tab_ws:
-        render_websocket_tab(k)
-if tab_inst:
-    with tab_inst:
-        render_instruments_utils_tab(k, api_key, access_token)
+        render_dashboard_tab(k, api_key, access
