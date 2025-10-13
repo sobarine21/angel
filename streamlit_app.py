@@ -62,6 +62,8 @@ if "kt_status_message" not in st.session_state:
     st.session_state["kt_status_message"] = "Not started"
 if "_rerun_ws" not in st.session_state: # Flag for WebSocket UI updates
     st.session_state["_rerun_ws"] = False
+if "broker_data_fetched_and_saved" not in st.session_state: # Flag for auto redirect
+    st.session_state["broker_data_fetched_and_saved"] = False
 
 # --- Load Credentials from Streamlit Secrets ---
 def load_secrets():
@@ -119,7 +121,9 @@ with st.sidebar:
     st.markdown(f"[🔗 Open Kite login]({login_url})")
 
     # Handle request_token from URL
+    # Use st.query_params to access URL parameters
     request_token_param = st.query_params.get("request_token")
+
     if request_token_param and not st.session_state["kite_access_token"]:
         st.info("Received request_token — exchanging for access token...")
         try:
@@ -127,8 +131,9 @@ with st.sidebar:
             st.session_state["kite_access_token"] = data.get("access_token")
             st.session_state["kite_login_response"] = data
             st.sidebar.success("Kite Access token obtained.")
-            st.query_params.clear() # Clear request_token from URL
-            st.rerun() # Rerun to refresh UI
+            # Clear the request_token from the URL after successful login
+            st.query_params.pop("request_token", None)
+            st.rerun() # Rerun to refresh UI and clear URL param
         except Exception as e:
             st.sidebar.error(f"Failed to generate Kite session: {e}")
 
@@ -217,13 +222,12 @@ with st.sidebar:
     if st.session_state["kite_access_token"] and st.session_state["user_session"]:
         st.success("Kite and Supabase Authenticated. Fetching Broker Data...")
         
-        # Placeholder for data fetching and saving
         if st.button("Fetch & Save Profile Data", key="fetch_save_broker_data_btn"):
             try:
                 kite_client_authenticated = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
                 if not kite_client_authenticated:
                     st.error("Kite client not authenticated. Please re-login.")
-                    st.stop() # Use st.stop() to halt further execution in this block
+                    st.stop()
                 
                 profile_data = kite_client_authenticated.profile()
                 margins_data = kite_client_authenticated.margins()
@@ -241,21 +245,18 @@ with st.sidebar:
                 }
                 
                 # Save to Supabase
-                # Check if profile already exists for the user_id
                 existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
                 
                 if existing_profile_query.data:
-                    # Update existing profile
                     profile_id_to_update = existing_profile_query.data[0]['id']
                     update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
-                    if update_response.data is not None and update_response.count > 0: # Check for successful update
+                    if update_response.data is not None and update_response.count > 0:
                         st.success("User profile and fund data updated successfully in Supabase!")
                     else:
                         st.error(f"Failed to update user profile. Response: {update_response.data}")
                 else:
-                    # Insert new profile
                     insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
-                    if insert_response.data is not None and insert_response.count > 0: # Check for successful insert
+                    if insert_response.data is not None and insert_response.count > 0:
                         st.success("User profile and fund data saved successfully to Supabase!")
                     else:
                         st.error(f"Failed to save user profile. Response: {insert_response.data}")
@@ -265,7 +266,6 @@ with st.sidebar:
                     order_history = kite_client_authenticated.orders()
                     trades_history = kite_client_authenticated.trades() 
 
-                    # Process and save orders
                     if order_history:
                         for order in order_history:
                             order_data = {
@@ -286,7 +286,6 @@ with st.sidebar:
                                 "product": order["product"],
                                 "created_at": datetime.now().isoformat()
                             }
-                            # Upsert logic: Check if order_id exists and update, otherwise insert
                             existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                             if existing_order_query.data:
                                 update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
@@ -298,7 +297,6 @@ with st.sidebar:
                                     st.warning(f"Could not insert order {order_data['order_id']}.")
                         st.success(f"Processed {len(order_history)} orders. Check Supabase for details.")
                     
-                    # Process and save trades
                     if trades_history:
                         for trade in trades_history:
                             trade_data = {
@@ -314,7 +312,6 @@ with st.sidebar:
                                 "product": trade["product"],
                                 "created_at": datetime.now().isoformat()
                             }
-                            # Upsert logic for trades
                             existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                             if existing_trade_query.data:
                                 update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
@@ -339,6 +336,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 4. Auto Redirect")
     st.caption(f"Configured redirect URL: **{AUTO_REDIRECT_URL}**")
+    
+    # This part now checks the session state flag for redirection
     if st.session_state.get("broker_data_fetched_and_saved"):
         st.info("Data fetched and saved. Redirecting in 5 seconds...")
         # Use JavaScript for a more seamless redirect
