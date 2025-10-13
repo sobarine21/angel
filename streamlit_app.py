@@ -114,6 +114,21 @@ def get_authenticated_kite_client(api_key: str | None, access_token: str | None)
         return k_instance
     return None
 
+# Helper to safely get numerical values from API responses
+def safe_get_numeric(data, key, default_value=0):
+    """Safely retrieve a numerical value, returning default if None or not a number."""
+    value = data.get(key)
+    if value is None:
+        return default_value
+    try:
+        # Attempt to convert to float, then to int if it's a whole number
+        float_val = float(value)
+        if float_val.is_integer():
+            return int(float_val)
+        return float_val
+    except (ValueError, TypeError):
+        return default_value
+
 # --- Sidebar: Kite Login ---
 with st.sidebar:
     st.markdown("### 1. Login to Kite Connect")
@@ -121,7 +136,6 @@ with st.sidebar:
     st.markdown(f"[🔗 Open Kite login]({login_url})")
 
     # Handle request_token from URL
-    # Use st.query_params to access URL parameters
     request_token_param = st.query_params.get("request_token")
 
     if request_token_param and not st.session_state["kite_access_token"]:
@@ -131,9 +145,8 @@ with st.sidebar:
             st.session_state["kite_access_token"] = data.get("access_token")
             st.session_state["kite_login_response"] = data
             st.sidebar.success("Kite Access token obtained.")
-            # Clear the request_token from the URL after successful login
             st.query_params.pop("request_token", None)
-            st.rerun() # Rerun to refresh UI and clear URL param
+            st.rerun()
         except Exception as e:
             st.sidebar.error(f"Failed to generate Kite session: {e}")
 
@@ -152,7 +165,6 @@ with st.sidebar:
 with st.sidebar:
     st.markdown("### 2. Supabase User Account")
     
-    # Check/refresh Supabase session
     def _refresh_supabase_session():
         try:
             session_data = supabase.auth.get_session()
@@ -173,7 +185,7 @@ with st.sidebar:
         if st.button("Logout from Supabase", key="supabase_logout_btn"):
             try:
                 supabase.auth.sign_out()
-                _refresh_supabase_session() # Update session state immediately
+                _refresh_supabase_session()
                 st.sidebar.success("Logged out from Supabase.")
                 st.rerun()
             except Exception as e:
@@ -237,10 +249,10 @@ with st.sidebar:
                     "email": profile_data.get("email"),
                     "user_name": profile_data.get("user_name"),
                     "broker": "KiteConnect",
-                    "funds_available_equity_live": margins_data.get("equity", {}).get("available", {}).get("live_balance", 0),
-                    "funds_utilized_equity": margins_data.get("equity", {}).get("utilised", {}).get("overall", 0),
-                    "funds_available_commodity_live": margins_data.get("commodity", {}).get("available", {}).get("live_balance", 0),
-                    "funds_utilized_commodity": margins_data.get("commodity", {}).get("utilised", {}).get("overall", 0),
+                    "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance"),
+                    "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall"),
+                    "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance"),
+                    "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall"),
                     "fetched_at": datetime.now().isoformat()
                 }
                 
@@ -261,7 +273,7 @@ with st.sidebar:
                     else:
                         st.error(f"Failed to save user profile. Response: {insert_response.data}")
 
-                # Fetch and save order history (example for current day)
+                # Fetch and save order history
                 try:
                     order_history = kite_client_authenticated.orders()
                     trades_history = kite_client_authenticated.trades() 
@@ -279,9 +291,9 @@ with st.sidebar:
                                 "variety": order["variety"],
                                 "validity": order["validity"],
                                 "transaction_type": order["transaction_type"],
-                                "quantity": order["quantity"],
-                                "price": order.get("price"),
-                                "trigger_price": order.get("trigger_price"),
+                                "quantity": safe_get_numeric(order, "quantity"), # Safely get quantity
+                                "price": safe_get_numeric(order, "price"),       # Safely get price
+                                "trigger_price": safe_get_numeric(order, "trigger_price"), # Safely get trigger_price
                                 "placed_at": order["order_timestamp"],
                                 "product": order["product"],
                                 "created_at": datetime.now().isoformat()
@@ -306,8 +318,8 @@ with st.sidebar:
                                 "symbol": trade.get("tradingsymbol"),
                                 "exchange": trade["exchange"],
                                 "transaction_type": trade["transaction_type"],
-                                "quantity": trade["quantity"],
-                                "price": trade["price"],
+                                "quantity": safe_get_numeric(trade, "quantity"), # Safely get quantity
+                                "price": safe_get_numeric(trade, "price"),       # Safely get price
                                 "executed_at": trade["execution_time"],
                                 "product": trade["product"],
                                 "created_at": datetime.now().isoformat()
@@ -323,7 +335,7 @@ with st.sidebar:
                                     st.warning(f"Could not insert trade {trade_data['trade_id']}.")
                         st.success(f"Processed {len(trades_history)} trades. Check Supabase for details.")
 
-                    st.session_state["broker_data_fetched_and_saved"] = True # Flag to trigger redirect
+                    st.session_state["broker_data_fetched_and_saved"] = True
 
                 except Exception as e:
                     st.error(f"Error fetching or saving order/trade history: {e}")
@@ -337,10 +349,8 @@ with st.sidebar:
     st.markdown("### 4. Auto Redirect")
     st.caption(f"Configured redirect URL: **{AUTO_REDIRECT_URL}**")
     
-    # This part now checks the session state flag for redirection
     if st.session_state.get("broker_data_fetched_and_saved"):
         st.info("Data fetched and saved. Redirecting in 5 seconds...")
-        # Use JavaScript for a more seamless redirect
         st.components.v1.html(f"<script>setTimeout(() => {{window.location.href = '{AUTO_REDIRECT_URL}';}}, 5000);</script>", height=0)
     else:
         st.info("Auto-redirect will occur after successful data fetch and save.")
@@ -349,9 +359,8 @@ with st.sidebar:
 k = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
 
 # --- Main UI - Tabs for modules ---
-# Only show tabs that require authentication if user is logged in
-tabs_list = ["Dashboard"] # Default to only Dashboard if not logged in
-if k and st.session_state["user_session"]: # Show all tabs if both Kite and Supabase are authenticated
+tabs_list = ["Dashboard"]
+if k and st.session_state["user_session"]:
     tabs_list.extend([
         "Portfolio", "Orders", "Market & Historical", "Machine Learning Analysis",
         "Risk & Stress Testing", "Performance Analysis", "Multi-Asset Analysis",
@@ -360,7 +369,6 @@ if k and st.session_state["user_session"]: # Show all tabs if both Kite and Supa
 
 tabs = st.tabs(tabs_list)
 
-# Assigning tab variables based on the actual number of tabs
 tab_dashboard = tabs[0]
 tab_portfolio = tabs[1] if len(tabs) > 1 else None
 tab_orders = tabs[2] if len(tabs) > 2 else None
@@ -375,8 +383,6 @@ tab_inst = tabs[10] if len(tabs) > 10 else None
 
 
 # --- Tab Logic Functions ---
-# Placeholder functions for tabs that are not implemented in this minimal version
-
 def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None):
     st.header("Dashboard")
     if not kite_client or not st.session_state["user_session"]:
@@ -403,8 +409,6 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
         st.write(f"**Supabase User ID:** {st.session_state['user_id']}")
         st.write(f"**Supabase Email:** {st.session_state['user_session'].user.email}")
 
-
-# Placeholder functions for other tabs (These would contain the full logic from the original script)
 def render_portfolio_tab(kite_client: KiteConnect | None):
     st.header("Portfolio")
     if not kite_client or not st.session_state["user_session"]:
@@ -477,11 +481,9 @@ def render_instruments_utils_tab(kite_client: KiteConnect | None, api_key: str |
 
 
 # --- Main Application Logic (Tab Rendering) ---
-# Global api_key and access_token to pass to tab functions that use cached utility functions.
 api_key = KITE_CREDENTIALS["api_key"]
 access_token = st.session_state["kite_access_token"]
 
-# Render tabs based on authentication status
 if tab_dashboard:
     with tab_dashboard: render_dashboard_tab(k, api_key, access_token)
 
