@@ -114,17 +114,24 @@ def get_authenticated_kite_client(api_key: str | None, access_token: str | None)
     return None
 
 def safe_get_numeric(data, key, default_value=None):
-    """Safely retrieve a numerical value. Returns default_value if None, non-numeric, or not present."""
+    """
+    Safely retrieve a numerical value.
+    Returns default_value if the key is not present, the value is None, or conversion to float fails.
+    If successful, converts to int if the float is an integer, otherwise returns float.
+    """
     value = data.get(key)
     if value is None:
-        return default_value # Return None if original value is None
+        return default_value # Return default if original value is None
+
     try:
         float_val = float(value)
+        # Check if the value is essentially an integer
         if float_val.is_integer():
             return int(float_val)
         return float_val
     except (ValueError, TypeError):
-        return default_value # Return None if conversion fails
+        # If conversion to float fails, return the default value
+        return default_value
 
 
 # --- Sidebar: Kite Login ---
@@ -149,7 +156,7 @@ with st.sidebar:
 
     if st.session_state["kite_access_token"]:
         st.success("Kite Authenticated ✅")
-        if st.sidebar.button("Logout from Kite", key="kite_logout_btn"):
+        if st.button("Logout from Kite", key="kite_logout_btn"):
             st.session_state["kite_access_token"] = None
             st.session_state["kite_login_response"] = None
             st.sidebar.success("Logged out from Kite. Please login again.")
@@ -164,6 +171,12 @@ with st.sidebar:
     
     def _refresh_supabase_session():
         try:
+            # Ensure Supabase client is initialized before calling auth methods
+            if not supabase:
+                st.session_state["user_session"] = None
+                st.session_state["user_id"] = None
+                return
+                
             session_data = supabase.auth.get_session()
             if session_data and session_data.user:
                 st.session_state["user_session"] = session_data
@@ -171,9 +184,13 @@ with st.sidebar:
             else:
                 st.session_state["user_session"] = None
                 st.session_state["user_id"] = None
-        except Exception:
+        except Exception as e:
+            # Handle cases where Supabase might not be initialized or other auth errors
             st.session_state["user_session"] = None
             st.session_state["user_id"] = None
+            # Optionally log this error for debugging
+            # print(f"Error refreshing Supabase session: {e}")
+
 
     _refresh_supabase_session()
 
@@ -181,7 +198,8 @@ with st.sidebar:
         st.success(f"Logged into Supabase as: {st.session_state['user_session'].user.email}")
         if st.button("Logout from Supabase", key="supabase_logout_btn"):
             try:
-                supabase.auth.sign_out()
+                if supabase:
+                    supabase.auth.sign_out()
                 _refresh_supabase_session()
                 st.sidebar.success("Logged out from Supabase.")
                 st.rerun()
@@ -203,7 +221,8 @@ with st.sidebar:
                 if email and password:
                     try:
                         with st.spinner("Logging in..."):
-                            response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                            if supabase:
+                                response = supabase.auth.sign_in_with_password({"email": email, "password": password})
                         _refresh_supabase_session()
                         st.success("Login successful! Welcome.")
                         st.rerun()
@@ -216,7 +235,8 @@ with st.sidebar:
                 if email and password:
                     try:
                         with st.spinner("Signing up..."):
-                            response = supabase.auth.sign_up({"email": email, "password": password})
+                            if supabase:
+                                response = supabase.auth.sign_up({"email": email, "password": password})
                         _refresh_supabase_session()
                         st.success("Sign up successful! Please check your email to confirm your account.")
                         st.info("After confirming your email, you can log in.")
@@ -247,14 +267,15 @@ with st.sidebar:
                     "user_name": profile_data.get("user_name"),
                     "broker": "KiteConnect",
                     # Use safe_get_numeric with a default of 0 for margins, as these are typically financial values
-                    "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value=0),
-                    "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value=0),
-                    "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value=0),
-                    "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall", default_value=0),
+                    "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value=0.0), # Use float default
+                    "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value=0.0), # Use float default
+                    "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value=0.0), # Use float default
+                    "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall", default_value=0.0), # Use float default
                     "fetched_at": datetime.now().isoformat()
                 }
                 
                 # Save to Supabase
+                # Check if a profile already exists for the user
                 existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
                 
                 if existing_profile_query.data:
@@ -278,6 +299,16 @@ with st.sidebar:
 
                     if order_history:
                         for order in order_history:
+                            # Ensure numerical fields have defaults if they might be None from API
+                            # and your Supabase columns are NOT NULL. Using 0.0 for prices, 0 for quantity.
+                            order_quantity = safe_get_numeric(order, "quantity", default_value=0)
+                            # Ensure quantity is an integer
+                            if not isinstance(order_quantity, int):
+                                order_quantity = int(order_quantity) if order_quantity is not None else 0
+
+                            order_price = safe_get_numeric(order, "price", default_value=0.0)
+                            order_trigger_price = safe_get_numeric(order, "trigger_price", default_value=0.0)
+
                             order_data = {
                                 "user_id": st.session_state["user_id"],
                                 "order_id": order["order_id"],
@@ -289,28 +320,23 @@ with st.sidebar:
                                 "variety": order["variety"],
                                 "validity": order["validity"],
                                 "transaction_type": order["transaction_type"],
-                                # Use safe_get_numeric. Consider the Supabase schema (NULL vs. 0)
-                                # If DB column is NOT NULL, use default 0/0.0
-                                # If DB column allows NULL, default_value=None is fine.
-                                "quantity": safe_get_numeric(order, "quantity", default_value=0), # Assuming quantity is never None and should be 0 if missing
-                                "price": safe_get_numeric(order, "price", default_value=None), # Allow price to be None if it is None from API
-                                "trigger_price": safe_get_numeric(order, "trigger_price", default_value=None), # Allow trigger_price to be None
+                                "quantity": order_quantity,
+                                "price": order_price,
+                                "trigger_price": order_trigger_price,
                                 "placed_at": order["order_timestamp"],
                                 "product": order["product"],
                                 "created_at": datetime.now().isoformat()
                             }
-                            # Now, handle potential None values before Supabase insert/update if columns are NOT NULL
-                            # If your Supabase columns are NOT NULL for price/trigger_price, you might need to set defaults here
-                            # For example, if price is NOT NULL and safe_get_numeric returned None:
-                            # if order_data["price"] is None: order_data["price"] = 0.0
-                            # if order_data["trigger_price"] is None: order_data["trigger_price"] = 0.0
-
+                            
+                            # Check if order already exists to update, otherwise insert
                             existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                             if existing_order_query.data:
+                                # Update existing order
                                 update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
                                 if update_order_response.data is None or update_order_response.count == 0:
                                     st.warning(f"Could not update order {order_data['order_id']}.")
                             else:
+                                # Insert new order
                                 insert_order_response = supabase.table("order_history").insert(order_data).execute()
                                 if insert_order_response.data is None or insert_order_response.count == 0:
                                     st.warning(f"Could not insert order {order_data['order_id']}.")
@@ -318,6 +344,15 @@ with st.sidebar:
                     
                     if trades_history:
                         for trade in trades_history:
+                            # Ensure numerical fields have defaults if they might be None from API
+                            # and your Supabase columns are NOT NULL. Using 0.0 for price, 0 for quantity.
+                            trade_quantity = safe_get_numeric(trade, "quantity", default_value=0)
+                            # Ensure quantity is an integer
+                            if not isinstance(trade_quantity, int):
+                                trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
+
+                            trade_price = safe_get_numeric(trade, "price", default_value=0.0)
+
                             trade_data = {
                                 "user_id": st.session_state["user_id"],
                                 "trade_id": trade["trade_id"],
@@ -325,23 +360,22 @@ with st.sidebar:
                                 "symbol": trade.get("tradingsymbol"),
                                 "exchange": trade["exchange"],
                                 "transaction_type": trade["transaction_type"],
-                                # Use safe_get_numeric
-                                "quantity": safe_get_numeric(trade, "quantity", default_value=0),
-                                "price": safe_get_numeric(trade, "price", default_value=None), # Allow price to be None
+                                "quantity": trade_quantity,
+                                "price": trade_price,
                                 "executed_at": trade["execution_time"],
                                 "product": trade["product"],
                                 "created_at": datetime.now().isoformat()
                             }
-                            # Similar check for NOT NULL columns if price/quantity are required to be non-null
-                            # if trade_data["price"] is None: trade_data["price"] = 0.0
-                            # if trade_data["quantity"] is None: trade_data["quantity"] = 0
-
+                            
+                            # Check if trade already exists to update, otherwise insert
                             existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                             if existing_trade_query.data:
+                                # Update existing trade
                                 update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
                                 if update_trade_response.data is None or update_trade_response.count == 0:
                                     st.warning(f"Could not update trade {trade_data['trade_id']}.")
                             else:
+                                # Insert new trade
                                 insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
                                 if insert_trade_response.data is None or insert_trade_response.count == 0:
                                     st.warning(f"Could not insert trade {trade_data['trade_id']}.")
@@ -363,14 +397,17 @@ with st.sidebar:
     
     if st.session_state.get("broker_data_fetched_and_saved"):
         st.info("Data fetched and saved. Redirecting in 5 seconds...")
-        st.components.v1.html(f"<script>setTimeout(() => {{window.location.href = '{AUTO_REDIRECT_URL}';}}, 5000);</script>", height=0)
+        # Using markdown to inject JavaScript for redirection
+        st.markdown(f'<script>setTimeout(() => {{window.location.href = "{AUTO_REDIRECT_URL}";}}, 5000);</script>', unsafe_allow_html=True)
     else:
         st.info("Auto-redirect will occur after successful data fetch and save.")
+
 
 # --- Authenticated KiteConnect client (used by main tabs) ---
 k = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
 
-# --- Main UI - Tabs for modules ---
+# --- Tab Definitions ---
+# Dynamically create tabs based on authentication status
 tabs_list = ["Dashboard"]
 if k and st.session_state["user_session"]:
     tabs_list.extend([
@@ -381,6 +418,7 @@ if k and st.session_state["user_session"]:
 
 tabs = st.tabs(tabs_list)
 
+# Assign tab objects for easier access
 tab_dashboard = tabs[0]
 tab_portfolio = tabs[1] if len(tabs) > 1 else None
 tab_orders = tabs[2] if len(tabs) > 2 else None
@@ -394,10 +432,13 @@ tab_ws = tabs[9] if len(tabs) > 9 else None
 tab_inst = tabs[10] if len(tabs) > 10 else None
 
 
-# --- Tab Logic Functions ---
-def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None):
+# --- Tab Rendering Functions ---
+# Placeholder functions for each tab's content.
+# These would contain the actual UI elements and logic for each section.
+
+def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None, supabase_client: Client | None):
     st.header("Dashboard")
-    if not kite_client or not st.session_state["user_session"]:
+    if not kite_client or not st.session_state["user_session"] or not supabase_client:
         st.info("Please login to Kite and Supabase to view the dashboard.")
         return
     
@@ -411,8 +452,9 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
             margins = kite_client.margins()
             st.write(f"**User Name:** {profile.get('user_name', 'N/A')}")
             st.write(f"**Email:** {profile.get('email', 'N/A')}")
-            st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', 0):,.2f}")
-            st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', 0):,.2f}")
+            # Using safe_get_numeric for robust display, with default 0.0 if missing/invalid
+            st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', default_value=0.0):,.2f}")
+            st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value=0.0):,.2f}")
         except Exception as e:
             st.error(f"Could not fetch broker details: {e}")
             
@@ -470,9 +512,9 @@ def render_multi_asset_analysis_tab(kite_client: KiteConnect | None, api_key: st
         return
     st.write("Correlation and diversification analysis would be here.")
 
-def render_custom_index_tab(kite_client: KiteConnect | None, supabase_client: Client, api_key: str | None, access_token: str | None):
+def render_custom_index_tab(kite_client: KiteConnect | None, supabase_client: Client | None, api_key: str | None, access_token: str | None):
     st.header("Custom Index")
-    if not kite_client or not st.session_state["user_session"]:
+    if not kite_client or not st.session_state["user_session"] or not supabase_client:
         st.info("Please login to Kite and Supabase to create and manage Custom Indexes.")
         return
     st.write("Custom index creation and management features would be here.")
@@ -496,26 +538,38 @@ def render_instruments_utils_tab(kite_client: KiteConnect | None, api_key: str |
 api_key = KITE_CREDENTIALS["api_key"]
 access_token = st.session_state["kite_access_token"]
 
+# Render tabs based on authentication status and availability
 if tab_dashboard:
-    with tab_dashboard: render_dashboard_tab(k, api_key, access_token)
+    with tab_dashboard:
+        render_dashboard_tab(k, api_key, access_token, supabase)
 
 if tab_portfolio:
-    with tab_portfolio: render_portfolio_tab(k)
+    with tab_portfolio:
+        render_portfolio_tab(k)
 if tab_orders:
-    with tab_orders: render_orders_tab(k)
+    with tab_orders:
+        render_orders_tab(k)
 if tab_market:
-    with tab_market: render_market_historical_tab(k, api_key, access_token)
+    with tab_market:
+        render_market_historical_tab(k, api_key, access_token)
 if tab_ml:
-    with tab_ml: render_ml_analysis_tab(k, api_key, access_token)
+    with tab_ml:
+        render_ml_analysis_tab(k, api_key, access_token)
 if tab_risk:
-    with tab_risk: render_risk_stress_testing_tab(k)
+    with tab_risk:
+        render_risk_stress_testing_tab(k)
 if tab_performance:
-    with tab_performance: render_performance_analysis_tab(k)
+    with tab_performance:
+        render_performance_analysis_tab(k)
 if tab_multi_asset:
-    with tab_multi_asset: render_multi_asset_analysis_tab(k, api_key, access_token)
+    with tab_multi_asset:
+        render_multi_asset_analysis_tab(k, api_key, access_token)
 if tab_custom_index:
-    with tab_custom_index: render_custom_index_tab(k, supabase, api_key, access_token)
+    with tab_custom_index:
+        render_custom_index_tab(k, supabase, api_key, access_token)
 if tab_ws:
-    with tab_ws: render_websocket_tab(k)
+    with tab_ws:
+        render_websocket_tab(k)
 if tab_inst:
-    with tab_inst: render_instruments_utils_tab(k, api_key, access_token)
+    with tab_inst:
+        render_instruments_utils_tab(k, api_key, access_token)
