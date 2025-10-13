@@ -267,7 +267,7 @@ with st.sidebar:
                     "email": profile_data.get("email"),
                     "user_name": profile_data.get("user_name"),
                     "broker": "KiteConnect",
-                    # Use safe_get_numeric with a default of 0.0 for margins, as these are typically financial values
+                    # Use safe_get_numeric with a default of 0.0 for margins
                     "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
                     "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
                     "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
@@ -276,7 +276,6 @@ with st.sidebar:
                 }
                 
                 # Save to Supabase
-                # Check if a profile already exists for the user
                 existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
                 
                 if existing_profile_query.data:
@@ -300,11 +299,10 @@ with st.sidebar:
 
                     if order_history:
                         for order in order_history:
-                            # Ensure numerical fields have defaults if they might be None from API
-                            # and your Supabase columns are NOT NULL. Using 0.0 for prices, 0 for quantity.
-                            order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0) # Default quantity to 0 if missing/invalid
-                            # Ensure quantity is an integer
-                            if not isinstance(order_quantity, int):
+                            # Always ensure numerical fields are numbers, defaulting to 0 or 0.0 if None or invalid.
+                            # This prevents NoneType comparison errors and handles non-nullable DB columns.
+                            order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0) # Default quantity to 0
+                            if not isinstance(order_quantity, int): # Ensure quantity is an integer
                                 order_quantity = int(order_quantity) if order_quantity is not None else 0
 
                             order_price = safe_get_numeric(order, "price", default_value_if_none_or_error=0.0) # Default price to 0.0
@@ -329,15 +327,12 @@ with st.sidebar:
                                 "created_at": datetime.now().isoformat()
                             }
                             
-                            # Check if order already exists to update, otherwise insert
                             existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                             if existing_order_query.data:
-                                # Update existing order
                                 update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
                                 if update_order_response.data is None or update_order_response.count == 0:
                                     st.warning(f"Could not update order {order_data['order_id']}.")
                             else:
-                                # Insert new order
                                 insert_order_response = supabase.table("order_history").insert(order_data).execute()
                                 if insert_order_response.data is None or insert_order_response.count == 0:
                                     st.warning(f"Could not insert order {order_data['order_id']}.")
@@ -345,10 +340,9 @@ with st.sidebar:
                     
                     if trades_history:
                         for trade in trades_history:
-                            # Ensure numerical fields have defaults if they might be None from API
-                            # and your Supabase columns are NOT NULL. Using 0.0 for price, 0 for quantity.
+                            # Always ensure numerical fields are numbers, defaulting to 0 or 0.0 if None or invalid.
                             trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0) # Default quantity to 0
-                            if not isinstance(trade_quantity, int):
+                            if not isinstance(trade_quantity, int): # Ensure quantity is an integer
                                 trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
 
                             trade_price = safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0) # Default price to 0.0
@@ -367,15 +361,12 @@ with st.sidebar:
                                 "created_at": datetime.now().isoformat()
                             }
                             
-                            # Check if trade already exists to update, otherwise insert
                             existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                             if existing_trade_query.data:
-                                # Update existing trade
                                 update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
                                 if update_trade_response.data is None or update_trade_response.count == 0:
                                     st.warning(f"Could not update trade {trade_data['trade_id']}.")
                             else:
-                                # Insert new trade
                                 insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
                                 if insert_trade_response.data is None or insert_trade_response.count == 0:
                                     st.warning(f"Could not insert trade {trade_data['trade_id']}.")
