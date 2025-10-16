@@ -116,7 +116,7 @@ def get_authenticated_kite_client(api_key: str | None, access_token: str | None)
             k_instance = KiteConnect(api_key=api_key)
             k_instance.set_access_token(access_token)
             # Test connection to ensure token is valid (optional, but good practice)
-            # k_instance.profile() 
+            # k_instance.profile()
             return k_instance
         except Exception as e:
             st.error(f"Error authenticating with KiteConnect: {e}. Please re-login.")
@@ -190,14 +190,14 @@ with st.sidebar:
 # --- Sidebar: Supabase Authentication ---
 with st.sidebar:
     st.markdown("### 2. Supabase User Account")
-    
+
     def _refresh_supabase_session():
         try:
             if not supabase:
                 st.session_state["user_session"] = None
                 st.session_state["user_id"] = None
                 return
-                
+
             session_data = supabase.auth.get_session()
             if session_data and session_data.user:
                 st.session_state["user_session"] = session_data
@@ -228,7 +228,7 @@ with st.sidebar:
             st.markdown("##### Email/Password Login/Sign Up")
             email = st.text_input("Email", key="supabase_email_input", help="Your email for Supabase authentication.")
             password = st.text_input("Password", type="password", key="supabase_password_input", help="Your password for Supabase authentication.")
-            
+
             col_auth1, col_auth2 = st.columns(2)
             with col_auth1:
                 login_submitted = st.form_submit_button("Login")
@@ -248,7 +248,7 @@ with st.sidebar:
                         st.error(f"Login failed: {e}")
                 else:
                     st.warning("Please enter both email and password for login.")
-            
+
             if signup_submitted:
                 if email and password:
                     try:
@@ -268,7 +268,7 @@ with st.sidebar:
     st.markdown("### 3. Broker Data Fetching & Auto Redirect")
     if st.session_state["kite_access_token"] and st.session_state["user_session"] and supabase:
         st.success("Kite and Supabase Authenticated. Ready to Fetch Broker Data.")
-        
+
         if st.button("Fetch & Save Profile Data", key="fetch_save_broker_data_btn"):
             try:
                 # Re-authenticate to ensure token validity in this context
@@ -276,11 +276,11 @@ with st.sidebar:
                 if not kite_client_authenticated:
                     st.error("Kite client not authenticated or token invalid. Please re-login.")
                     st.stop()
-                
+
                 with st.spinner("Fetching profile and margin data..."):
                     profile_data = kite_client_authenticated.profile()
                     margins_data = kite_client_authenticated.margins()
-                
+
                 user_profile_info = {
                     "user_id": st.session_state["user_id"],
                     "email": profile_data.get("email"),
@@ -293,20 +293,22 @@ with st.sidebar:
                     "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
                     "fetched_at": datetime.now().isoformat()
                 }
-                
+
                 # Save to Supabase
                 existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
-                
+
                 if existing_profile_query.data:
                     profile_id_to_update = existing_profile_query.data[0]['id']
                     update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
-                    if update_response.data is not None and update_response.count > 0:
+                    # FIX: Check that .count is not None before comparing it to an integer
+                    if update_response.data and update_response.count is not None and update_response.count > 0:
                         st.success("User profile and fund data updated successfully in Supabase!")
                     else:
                         st.error(f"Failed to update user profile. Response: {update_response.data}")
                 else:
                     insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
-                    if insert_response.data is not None and insert_response.count > 0:
+                    # FIX: Check that .count is not None before comparing it to an integer
+                    if insert_response.data and insert_response.count is not None and insert_response.count > 0:
                         st.success("User profile and fund data saved successfully to Supabase!")
                     else:
                         st.error(f"Failed to save user profile. Response: {insert_response.data}")
@@ -315,7 +317,7 @@ with st.sidebar:
                 with st.spinner("Fetching order and trade history..."):
                     try:
                         order_history = kite_client_authenticated.orders()
-                        trades_history = kite_client_authenticated.trades() 
+                        trades_history = kite_client_authenticated.trades()
 
                         if order_history:
                             for order in order_history:
@@ -329,7 +331,7 @@ with st.sidebar:
                                 # If raw price is None, pass None to Supabase (assuming nullable column).
                                 # Otherwise, use safe_get_numeric.
                                 order_price = None if order_price_raw is None else safe_get_numeric(order, "price", default_value_if_none_or_error=0.0)
-                                
+
                                 order_trigger_price_raw = order.get("trigger_price")
                                 # If raw trigger_price is None, pass None to Supabase.
                                 order_trigger_price = None if order_trigger_price_raw is None else safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0)
@@ -352,19 +354,21 @@ with st.sidebar:
                                     "product": order["product"],
                                     "created_at": datetime.now().isoformat()
                                 }
-                                
+
                                 # Check if order already exists before inserting/updating
                                 existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                                 if existing_order_query.data:
                                     update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
-                                    if update_order_response.data is None or update_order_response.count == 0:
+                                    # FIX: Robustly check for a non-successful update (handles count being None or 0)
+                                    if not (update_order_response.count and update_order_response.count > 0):
                                         st.warning(f"Could not update order {order_data['order_id']}.")
                                 else:
                                     insert_order_response = supabase.table("order_history").insert(order_data).execute()
-                                    if insert_order_response.data is None or insert_order_response.count == 0:
+                                    # FIX: Robustly check for a non-successful insert (handles count being None or 0)
+                                    if not (insert_order_response.count and insert_order_response.count > 0):
                                         st.warning(f"Could not insert order {order_data['order_id']}.")
                             st.success(f"Processed {len(order_history)} orders. Check Supabase for details.")
-                        
+
                         if trades_history:
                             for trade in trades_history:
                                 # Process numerical fields carefully
@@ -390,16 +394,18 @@ with st.sidebar:
                                     "product": trade["product"],
                                     "created_at": datetime.now().isoformat()
                                 }
-                                
+
                                 # Check if trade already exists before inserting/updating
                                 existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                                 if existing_trade_query.data:
                                     update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
-                                    if update_trade_response.data is None or update_trade_response.count == 0:
+                                    # FIX: Robustly check for a non-successful update (handles count being None or 0)
+                                    if not (update_trade_response.count and update_trade_response.count > 0):
                                         st.warning(f"Could not update trade {trade_data['trade_id']}.")
                                 else:
                                     insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
-                                    if insert_trade_response.data is None or insert_trade_response.count == 0:
+                                    # FIX: Robustly check for a non-successful insert (handles count being None or 0)
+                                    if not (insert_trade_response.count and insert_trade_response.count > 0):
                                         st.warning(f"Could not insert trade {trade_data['trade_id']}.")
                             st.success(f"Processed {len(trades_history)} trades. Check Supabase for details.")
 
@@ -416,7 +422,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 4. Auto Redirect")
     st.caption(f"Configured redirect URL: **{AUTO_REDIRECT_URL}**")
-    
+
     if st.session_state.get("broker_data_fetched_and_saved"):
         st.info("Data fetched and saved. Redirecting in 5 seconds...")
         # Using markdown to inject JavaScript for redirection
@@ -463,9 +469,9 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
     if not kite_client or not st.session_state["user_session"] or not supabase_client:
         st.info("Please login to Kite and Supabase to view the dashboard.")
         return
-    
+
     st.success("Welcome! You are logged in.")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Broker Account Summary")
@@ -479,7 +485,7 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
             st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
         except Exception as e:
             st.error(f"Could not fetch broker details: {e}")
-            
+
     with col2:
         st.subheader("Supabase Account Info")
         st.write(f"**Supabase User ID:** {st.session_state['user_id']}")
