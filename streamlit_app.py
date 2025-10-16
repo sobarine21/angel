@@ -300,18 +300,18 @@ with st.sidebar:
                 if existing_profile_query.data:
                     profile_id_to_update = existing_profile_query.data[0]['id']
                     update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
-                    # FIX: Check that .count is not None before comparing it to an integer
-                    if update_response.data and update_response.count is not None and update_response.count > 0:
+                    # FIX: Check for success by verifying that .data is populated.
+                    if update_response.data:
                         st.success("User profile and fund data updated successfully in Supabase!")
                     else:
-                        st.error(f"Failed to update user profile. Response: {update_response.data}")
+                        st.error(f"Failed to update user profile. Response: {update_response}")
                 else:
                     insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
-                    # FIX: Check that .count is not None before comparing it to an integer
-                    if insert_response.data and insert_response.count is not None and insert_response.count > 0:
+                    # FIX: Check for success by verifying that .data is populated.
+                    if insert_response.data:
                         st.success("User profile and fund data saved successfully to Supabase!")
                     else:
-                        st.error(f"Failed to save user profile. Response: {insert_response.data}")
+                        st.error(f"Failed to save user profile. Response: {insert_response}")
 
                 # Fetch and save order history
                 with st.spinner("Fetching order and trade history..."):
@@ -322,18 +322,14 @@ with st.sidebar:
                         if order_history:
                             for order in order_history:
                                 # Process numerical fields carefully
-                                order_quantity_raw = order.get("quantity")
                                 order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0)
                                 if not isinstance(order_quantity, int): # Ensure quantity is an integer
                                     order_quantity = int(order_quantity) if order_quantity is not None else 0
 
                                 order_price_raw = order.get("price")
-                                # If raw price is None, pass None to Supabase (assuming nullable column).
-                                # Otherwise, use safe_get_numeric.
                                 order_price = None if order_price_raw is None else safe_get_numeric(order, "price", default_value_if_none_or_error=0.0)
 
                                 order_trigger_price_raw = order.get("trigger_price")
-                                # If raw trigger_price is None, pass None to Supabase.
                                 order_trigger_price = None if order_trigger_price_raw is None else safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0)
 
                                 order_data = {
@@ -359,26 +355,24 @@ with st.sidebar:
                                 existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
                                 if existing_order_query.data:
                                     update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
-                                    # FIX: Robustly check for a non-successful update (handles count being None or 0)
-                                    if not (update_order_response.count and update_order_response.count > 0):
+                                    # FIX: Robustly check for failure (if .data is empty)
+                                    if not update_order_response.data:
                                         st.warning(f"Could not update order {order_data['order_id']}.")
                                 else:
                                     insert_order_response = supabase.table("order_history").insert(order_data).execute()
-                                    # FIX: Robustly check for a non-successful insert (handles count being None or 0)
-                                    if not (insert_order_response.count and insert_order_response.count > 0):
+                                    # FIX: Robustly check for failure (if .data is empty)
+                                    if not insert_order_response.data:
                                         st.warning(f"Could not insert order {order_data['order_id']}.")
                             st.success(f"Processed {len(order_history)} orders. Check Supabase for details.")
 
                         if trades_history:
                             for trade in trades_history:
                                 # Process numerical fields carefully
-                                trade_quantity_raw = trade.get("quantity")
-                                trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0) # Default quantity to 0
-                                if not isinstance(trade_quantity, int): # Ensure quantity is an integer
+                                trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0)
+                                if not isinstance(trade_quantity, int):
                                     trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
 
                                 trade_price_raw = trade.get("price")
-                                # If raw price is None, pass None to Supabase (assuming nullable column).
                                 trade_price = None if trade_price_raw is None else safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0)
 
                                 trade_data = {
@@ -399,13 +393,13 @@ with st.sidebar:
                                 existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
                                 if existing_trade_query.data:
                                     update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
-                                    # FIX: Robustly check for a non-successful update (handles count being None or 0)
-                                    if not (update_trade_response.count and update_trade_response.count > 0):
+                                    # FIX: Robustly check for failure (if .data is empty)
+                                    if not update_trade_response.data:
                                         st.warning(f"Could not update trade {trade_data['trade_id']}.")
                                 else:
                                     insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
-                                    # FIX: Robustly check for a non-successful insert (handles count being None or 0)
-                                    if not (insert_trade_response.count and insert_trade_response.count > 0):
+                                    # FIX: Robustly check for failure (if .data is empty)
+                                    if not insert_trade_response.data:
                                         st.warning(f"Could not insert trade {trade_data['trade_id']}.")
                             st.success(f"Processed {len(trades_history)} trades. Check Supabase for details.")
 
@@ -462,9 +456,8 @@ tab_inst = tabs[10] if len(tabs) > 10 else None
 
 # --- Tab Rendering Functions ---
 # Placeholder functions for each tab's content.
-# These would contain the actual UI elements and logic for each section.
 
-def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None, supabase_client: Client | None):
+def render_dashboard_tab(kite_client: KiteConnect | None, supabase_client: Client | None):
     st.header("Dashboard")
     if not kite_client or not st.session_state["user_session"] or not supabase_client:
         st.info("Please login to Kite and Supabase to view the dashboard.")
@@ -480,7 +473,6 @@ def render_dashboard_tab(kite_client: KiteConnect | None, api_key: str | None, a
             margins = kite_client.margins()
             st.write(f"**User Name:** {profile.get('user_name', 'N/A')}")
             st.write(f"**Email:** {profile.get('email', 'N/A')}")
-            # Using safe_get_numeric for robust display, with default 0.0 if missing/invalid
             st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
             st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
         except Exception as e:
@@ -505,14 +497,14 @@ def render_orders_tab(kite_client: KiteConnect | None):
         return
     st.write("Order management functionalities would be here.")
 
-def render_market_historical_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None):
+def render_market_historical_tab(kite_client: KiteConnect | None):
     st.header("Market & Historical")
     if not kite_client or not st.session_state["user_session"]:
         st.info("Please login to Kite and Supabase to access Market Data.")
         return
     st.write("Market data and historical charting would be here.")
 
-def render_ml_analysis_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None):
+def render_ml_analysis_tab(kite_client: KiteConnect | None):
     st.header("Machine Learning Analysis")
     if not kite_client or not st.session_state["user_session"]:
         st.info("Please login to Kite and Supabase for ML Analysis.")
@@ -533,14 +525,14 @@ def render_performance_analysis_tab(kite_client: KiteConnect | None):
         return
     st.write("Performance metrics and benchmarking would be here.")
 
-def render_multi_asset_analysis_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None):
+def render_multi_asset_analysis_tab(kite_client: KiteConnect | None):
     st.header("Multi-Asset Analysis")
     if not kite_client or not st.session_state["user_session"]:
         st.info("Please login to Kite and Supabase for Multi-Asset Analysis.")
         return
     st.write("Correlation and diversification analysis would be here.")
 
-def render_custom_index_tab(kite_client: KiteConnect | None, supabase_client: Client | None, api_key: str | None, access_token: str | None):
+def render_custom_index_tab(kite_client: KiteConnect | None, supabase_client: Client | None):
     st.header("Custom Index")
     if not kite_client or not st.session_state["user_session"] or not supabase_client:
         st.info("Please login to Kite and Supabase to create and manage Custom Indexes.")
@@ -554,7 +546,7 @@ def render_websocket_tab(kite_client: KiteConnect | None):
         return
     st.write("Live data streaming using WebSockets would be here.")
 
-def render_instruments_utils_tab(kite_client: KiteConnect | None, api_key: str | None, access_token: str | None):
+def render_instruments_utils_tab(kite_client: KiteConnect | None):
     st.header("Instruments Utils")
     if not kite_client or not st.session_state["user_session"]:
         st.info("Please login to Kite and Supabase for Instrument Utilities.")
@@ -563,13 +555,11 @@ def render_instruments_utils_tab(kite_client: KiteConnect | None, api_key: str |
 
 
 # --- Main Application Logic (Tab Rendering) ---
-api_key = KITE_CREDENTIALS["api_key"]
-access_token = st.session_state["kite_access_token"]
 
 # Render tabs based on authentication status and availability
 if tab_dashboard:
     with tab_dashboard:
-        render_dashboard_tab(k, api_key, access_token, supabase)
+        render_dashboard_tab(k, supabase)
 
 if tab_portfolio:
     with tab_portfolio:
@@ -579,10 +569,10 @@ if tab_orders:
         render_orders_tab(k)
 if tab_market:
     with tab_market:
-        render_market_historical_tab(k, api_key, access_token)
+        render_market_historical_tab(k)
 if tab_ml:
     with tab_ml:
-        render_ml_analysis_tab(k, api_key, access_token)
+        render_ml_analysis_tab(k)
 if tab_risk:
     with tab_risk:
         render_risk_stress_testing_tab(k)
@@ -591,13 +581,13 @@ if tab_performance:
         render_performance_analysis_tab(k)
 if tab_multi_asset:
     with tab_multi_asset:
-        render_multi_asset_analysis_tab(k, api_key, access_token)
+        render_multi_asset_analysis_tab(k)
 if tab_custom_index:
     with tab_custom_index:
-        render_custom_index_tab(k, supabase, api_key, access_token)
+        render_custom_index_tab(k, supabase)
 if tab_ws:
     with tab_ws:
         render_websocket_tab(k)
 if tab_inst:
     with tab_inst:
-        render_instruments_utils_tab(k, api_key, access_token)
+        render_instruments_utils_tab(k)
