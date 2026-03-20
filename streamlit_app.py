@@ -37,24 +37,63 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Load credentials from Streamlit secrets
-@st.cache_data
 def load_config():
     """Load API configuration from Streamlit secrets"""
     try:
+        # Check if secrets are available
+        if not hasattr(st, 'secrets'):
+            st.error("Streamlit secrets not available")
+            return None
+        
+        # Try to access the api section
+        if 'api' not in st.secrets:
+            st.error("'api' section not found in secrets.toml")
+            st.info("""
+            Please ensure your .streamlit/secrets.toml file has this structure:
+```toml
+            [api]
+            base_url = "https://YOUR_PROJECT.supabase.co/functions/v1"
+            anon_key = "YOUR_ANON_KEY"
+```
+            """)
+            return None
+        
         config = {
             'base_url': st.secrets["api"]["base_url"],
             'anon_key': st.secrets["api"]["anon_key"]
         }
+        
+        # Validate the configuration
+        if not config['base_url'] or not config['anon_key']:
+            st.error("API credentials are empty in secrets.toml")
+            return None
+        
+        if "YOUR_" in config['base_url'] or "YOUR_" in config['anon_key']:
+            st.warning("⚠️ Please update the placeholder values in secrets.toml with your actual credentials")
+            return None
+        
         return config
+        
+    except KeyError as e:
+        st.error(f"Missing key in secrets.toml: {e}")
+        st.info("""
+        Required structure for .streamlit/secrets.toml:
+```toml
+        [api]
+        base_url = "https://your-project.supabase.co/functions/v1"
+        anon_key = "your-actual-anon-key"
+```
+        """)
+        return None
     except Exception as e:
         st.error(f"Error loading configuration: {e}")
-        st.info("Please configure your secrets.toml file with API credentials")
+        st.info("Please check your .streamlit/secrets.toml file")
         return None
 
 # API Client Class
 class OHLCAPIClient:
     def __init__(self, base_url, anon_key):
-        self.base_url = base_url
+        self.base_url = base_url.rstrip('/')  # Remove trailing slash
         self.headers = {
             'Authorization': f'Bearer {anon_key}',
             'Content-Type': 'application/json'
@@ -75,8 +114,9 @@ class OHLCAPIClient:
             params['end_date'] = end_date
         
         try:
+            url = f"{self.base_url}/ohlc-data"
             response = requests.get(
-                f"{self.base_url}/ohlc-data",
+                url,
                 headers=self.headers,
                 params=params,
                 timeout=30
@@ -85,13 +125,16 @@ class OHLCAPIClient:
             return response.json()
         except requests.exceptions.RequestException as e:
             st.error(f"API Error: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                st.error(f"Response: {e.response.text}")
             return None
     
     def get_ohlc_by_id(self, record_id):
         """Get specific OHLC record by ID"""
         try:
+            url = f"{self.base_url}/ohlc-data/{record_id}"
             response = requests.get(
-                f"{self.base_url}/ohlc-data/{record_id}",
+                url,
                 headers=self.headers,
                 timeout=30
             )
@@ -99,13 +142,16 @@ class OHLCAPIClient:
             return response.json()
         except requests.exceptions.RequestException as e:
             st.error(f"API Error: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                st.error(f"Response: {e.response.text}")
             return None
     
     def get_symbol_data(self, symbol, limit=100):
         """Get data for specific symbol"""
         try:
+            url = f"{self.base_url}/ohlc-data/symbol/{symbol}"
             response = requests.get(
-                f"{self.base_url}/ohlc-data/symbol/{symbol}",
+                url,
                 headers=self.headers,
                 params={'limit': limit},
                 timeout=30
@@ -114,13 +160,16 @@ class OHLCAPIClient:
             return response.json()
         except requests.exceptions.RequestException as e:
             st.error(f"API Error: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                st.error(f"Response: {e.response.text}")
             return None
     
     def get_latest_ohlc(self, symbol):
         """Get latest OHLC for a symbol"""
         try:
+            url = f"{self.base_url}/ohlc-data/latest/{symbol}"
             response = requests.get(
-                f"{self.base_url}/ohlc-data/latest/{symbol}",
+                url,
                 headers=self.headers,
                 timeout=30
             )
@@ -128,6 +177,8 @@ class OHLCAPIClient:
             return response.json()
         except requests.exceptions.RequestException as e:
             st.error(f"API Error: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                st.error(f"Response: {e.response.text}")
             return None
 
 # Data Processing Functions
@@ -218,8 +269,16 @@ def main():
     
     # Load configuration
     config = load_config()
+    
     if not config:
         st.stop()
+    
+    # Display connection status
+    with st.sidebar:
+        st.success("✅ Configuration Loaded")
+        with st.expander("Connection Details"):
+            st.code(f"Base URL: {config['base_url']}")
+            st.code(f"Auth: Bearer {config['anon_key'][:20]}...")
     
     # Initialize API client
     api_client = OHLCAPIClient(config['base_url'], config['anon_key'])
