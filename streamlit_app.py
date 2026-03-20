@@ -1,593 +1,553 @@
+# app.py
 import streamlit as st
-from kiteconnect import KiteConnect, KiteTicker
+import requests
 import pandas as pd
-import json
-import threading
-import time
-from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
-import lightgbm as lgb
-import ta  # Technical Analysis library
+from datetime import datetime, timedelta
+import json
 
-# Supabase imports
-from supabase import create_client, Client
+# Page configuration
+st.set_page_config(
+    page_title="OHLC Data Dashboard",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- Streamlit Page Configuration ---
-st.set_page_config(page_title="Invsion Connect", layout="wide", initial_sidebar_state="expanded")
-st.title("Invsion Connect")
-st.markdown("A comprehensive platform for fetching market data, performing ML-driven analysis, risk assessment, and live data streaming.")
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        margin-bottom: 1rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    .stAlert {
+        margin-top: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- Global Constants & Session State Initialization ---
-TRADING_DAYS_PER_YEAR = 252
-DEFAULT_EXCHANGE = "NSE"
-
-# Initialize session state variables if they don't exist
-if "kite_access_token" not in st.session_state:
-    st.session_state["kite_access_token"] = None
-if "kite_login_response" not in st.session_state:
-    st.session_state["kite_login_response"] = None
-if "instruments_df" not in st.session_state:
-    st.session_state["instruments_df"] = pd.DataFrame()
-if "historical_data" not in st.session_state:
-    st.session_state["historical_data"] = pd.DataFrame()
-if "last_fetched_symbol" not in st.session_state:
-    st.session_state["last_fetched_symbol"] = None
-if "user_session" not in st.session_state:
-    st.session_state["user_session"] = None
-if "user_id" not in st.session_state:
-    st.session_state["user_id"] = None
-if "saved_indexes" not in st.session_state:
-    st.session_state["saved_indexes"] = []
-if "current_calculated_index_data" not in st.session_state: # To store current CSV's index data
-    st.session_state["current_calculated_index_data"] = None
-if "current_calculated_index_history" not in st.session_state: # To store historical index values for plotting
-    st.session_state["current_calculated_index_history"] = pd.DataFrame()
-if "kt_ticker" not in st.session_state:
-    st.session_state["kt_ticker"] = None
-if "kt_thread" not in st.session_state:
-    st.session_state["kt_thread"] = None
-if "kt_running" not in st.session_state:
-    st.session_state["kt_running"] = False
-if "kt_ticks" not in st.session_state:
-    st.session_state["kt_ticks"] = []
-if "kt_live_prices" not in st.session_state:
-    st.session_state["kt_live_prices"] = pd.DataFrame(columns=['timestamp', 'last_price', 'instrument_token'])
-if "kt_status_message" not in st.session_state:
-    st.session_state["kt_status_message"] = "Not started"
-if "_rerun_ws" not in st.session_state: # Flag for WebSocket UI updates
-    st.session_state["_rerun_ws"] = False
-if "broker_data_fetched_and_saved" not in st.session_state: # Flag for auto redirect
-    st.session_state["broker_data_fetched_and_saved"] = False
-
-# --- Load Credentials from Streamlit Secrets ---
-def load_secrets():
-    secrets = st.secrets
-    kite_conf = secrets.get("kite", {})
-    supabase_conf = secrets.get("supabase", {})
-    auto_redirect_conf = secrets.get("auto_redirect", {})
-
-    errors = []
-    if not kite_conf.get("api_key") or not kite_conf.get("api_secret") or not kite_conf.get("redirect_uri"):
-        errors.append("Kite credentials (api_key, api_secret, redirect_uri)")
-    if not supabase_conf.get("url") or not supabase_conf.get("anon_key"):
-        errors.append("Supabase credentials (url, anon_key)")
-    if not auto_redirect_conf.get("url"):
-        errors.append("Auto redirect URL (url in [auto_redirect])")
-
-    if errors:
-        st.error(f"Missing required credentials in `.streamlit/secrets.toml`: {', '.join(errors)}.")
-        st.info("Example `secrets.toml`:\n```toml\n[kite]\napi_key=\"YOUR_KITE_API_KEY\"\napi_secret=\"YOUR_KITE_SECRET\"\nredirect_uri=\"http://localhost:8501\"\n\n[supabase]\nurl=\"YOUR_SUPABASE_URL\"\nanon_key=\"YOUR_SUPABASE_ANON_KEY\"\n\n[auto_redirect]\nurl=\"YOUR_REDIRECT_URL\"\n```")
-        st.stop()
-    return kite_conf, supabase_conf, auto_redirect_conf.get("url", "http://localhost:8501") # Provide a default if not found
-
-KITE_CREDENTIALS, SUPABASE_CREDENTIALS, AUTO_REDIRECT_URL = load_secrets()
-
-# --- Supabase Client Initialization ---
-@st.cache_resource(ttl=3600)
-def init_supabase_client(url: str, key: str) -> Client:
+# Load credentials from Streamlit secrets
+@st.cache_data
+def load_config():
+    """Load API configuration from Streamlit secrets"""
     try:
-        return create_client(url, key)
+        config = {
+            'base_url': st.secrets["api"]["base_url"],
+            'anon_key': st.secrets["api"]["anon_key"]
+        }
+        return config
     except Exception as e:
-        st.error(f"Failed to initialize Supabase client: {e}")
+        st.error(f"Error loading configuration: {e}")
+        st.info("Please configure your secrets.toml file with API credentials")
         return None
 
-supabase: Client | None = init_supabase_client(SUPABASE_CREDENTIALS["url"], SUPABASE_CREDENTIALS["anon_key"])
-
-# --- KiteConnect Client Initialization (Unauthenticated for login URL) ---
-@st.cache_resource(ttl=3600)
-def init_kite_unauth_client(api_key: str) -> KiteConnect:
-    return KiteConnect(api_key=api_key)
-
-kite_unauth_client = init_kite_unauth_client(KITE_CREDENTIALS["api_key"])
-login_url = kite_unauth_client.login_url()
-
-
-# --- Utility Functions ---
-
-def get_authenticated_kite_client(api_key: str | None, access_token: str | None) -> KiteConnect | None:
-    if api_key and access_token:
+# API Client Class
+class OHLCAPIClient:
+    def __init__(self, base_url, anon_key):
+        self.base_url = base_url
+        self.headers = {
+            'Authorization': f'Bearer {anon_key}',
+            'Content-Type': 'application/json'
+        }
+    
+    def get_ohlc_data(self, symbol=None, start_date=None, end_date=None, limit=1000, offset=0):
+        """Get OHLC data with optional filters"""
+        params = {
+            'limit': limit,
+            'offset': offset
+        }
+        
+        if symbol:
+            params['symbol'] = symbol
+        if start_date:
+            params['start_date'] = start_date
+        if end_date:
+            params['end_date'] = end_date
+        
         try:
-            k_instance = KiteConnect(api_key=api_key)
-            k_instance.set_access_token(access_token)
-            # Test connection to ensure token is valid (optional, but good practice)
-            # k_instance.profile()
-            return k_instance
-        except Exception as e:
-            st.error(f"Error authenticating with KiteConnect: {e}. Please re-login.")
-            st.session_state["kite_access_token"] = None # Invalidate token
-            st.session_state["kite_login_response"] = None
+            response = requests.get(
+                f"{self.base_url}/ohlc-data",
+                headers=self.headers,
+                params=params,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"API Error: {e}")
             return None
-    return None
-
-def safe_get_numeric(data, key, default_value_if_none_or_error=0.0):
-    """
-    Safely retrieve a numerical value.
-    Returns default_value_if_none_or_error if the key is not present, the value is None,
-    or conversion to float fails.
-    If successful, converts to int if the float is an integer, otherwise returns float.
-    """
-    value = data.get(key)
-    if value is None:
-        return default_value_if_none_or_error # Return the provided default if original value is None
-
-    try:
-        float_val = float(value)
-        # Check if the value is essentially an integer
-        if float_val.is_integer():
-            return int(float_val)
-        return float_val
-    except (ValueError, TypeError):
-        # If conversion to float fails, return the default value
-        return default_value_if_none_or_error
-
-
-# --- Sidebar: Kite Login ---
-with st.sidebar:
-    st.markdown("### 1. Login to Kite Connect")
-    st.write("Click to open Kite login. You'll be redirected back with a `request_token`.")
-    st.markdown(f"[🔗 Open Kite login]({login_url})")
-
-    request_token_param = st.query_params.get("request_token")
-
-    if request_token_param and not st.session_state["kite_access_token"]:
-        st.info("Received request_token — exchanging for access token...")
+    
+    def get_ohlc_by_id(self, record_id):
+        """Get specific OHLC record by ID"""
         try:
-            data = kite_unauth_client.generate_session(request_token_param, api_secret=KITE_CREDENTIALS["api_secret"])
-            st.session_state["kite_access_token"] = data.get("access_token")
-            st.session_state["kite_login_response"] = data
-            st.sidebar.success("Kite Access token obtained.")
-            st.query_params.pop("request_token", None)
-            st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"Failed to generate Kite session: {e}")
-
-    if st.session_state["kite_access_token"]:
-        # Verify token validity
-        k_check = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
-        if k_check:
-            st.success("Kite Authenticated ✅")
-            if st.button("Logout from Kite", key="kite_logout_btn"):
-                st.session_state["kite_access_token"] = None
-                st.session_state["kite_login_response"] = None
-                st.sidebar.success("Logged out from Kite. Please login again.")
-                st.rerun()
-        else:
-            st.warning("Kite authentication token is invalid. Please re-login.")
-            st.session_state["kite_access_token"] = None
-            st.session_state["kite_login_response"] = None
-            if st.button("Login to Kite", key="kite_relogin_btn"):
-                st.rerun()
-    else:
-        st.info("Not authenticated with Kite yet.")
-
-
-# --- Sidebar: Supabase Authentication ---
-with st.sidebar:
-    st.markdown("### 2. Supabase User Account")
-
-    def _refresh_supabase_session():
+            response = requests.get(
+                f"{self.base_url}/ohlc-data/{record_id}",
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"API Error: {e}")
+            return None
+    
+    def get_symbol_data(self, symbol, limit=100):
+        """Get data for specific symbol"""
         try:
-            if not supabase:
-                st.session_state["user_session"] = None
-                st.session_state["user_id"] = None
-                return
+            response = requests.get(
+                f"{self.base_url}/ohlc-data/symbol/{symbol}",
+                headers=self.headers,
+                params={'limit': limit},
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"API Error: {e}")
+            return None
+    
+    def get_latest_ohlc(self, symbol):
+        """Get latest OHLC for a symbol"""
+        try:
+            response = requests.get(
+                f"{self.base_url}/ohlc-data/latest/{symbol}",
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"API Error: {e}")
+            return None
 
-            session_data = supabase.auth.get_session()
-            if session_data and session_data.user:
-                st.session_state["user_session"] = session_data
-                st.session_state["user_id"] = session_data.user.id
+# Data Processing Functions
+def process_ohlc_dataframe(data):
+    """Convert API response to pandas DataFrame"""
+    if not data or 'data' not in data:
+        return None
+    
+    df = pd.DataFrame(data['data'])
+    if not df.empty and 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+    return df
+
+def create_candlestick_chart(df, symbol):
+    """Create interactive candlestick chart"""
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        subplot_titles=(f'{symbol} Price', 'Volume'),
+        row_heights=[0.7, 0.3]
+    )
+    
+    # Candlestick chart
+    fig.add_trace(
+        go.Candlestick(
+            x=df['date'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='OHLC'
+        ),
+        row=1, col=1
+    )
+    
+    # Volume bar chart
+    colors = ['red' if close < open else 'green' 
+              for close, open in zip(df['close'], df['open'])]
+    
+    fig.add_trace(
+        go.Bar(
+            x=df['date'],
+            y=df['volume'],
+            name='Volume',
+            marker_color=colors,
+            showlegend=False
+        ),
+        row=2, col=1
+    )
+    
+    fig.update_layout(
+        title=f'{symbol} OHLC Chart',
+        yaxis_title='Price',
+        yaxis2_title='Volume',
+        xaxis_rangeslider_visible=False,
+        height=700,
+        hovermode='x unified'
+    )
+    
+    return fig
+
+def calculate_technical_indicators(df):
+    """Calculate basic technical indicators"""
+    if df is None or df.empty:
+        return df
+    
+    # Simple Moving Averages
+    df['SMA_20'] = df['close'].rolling(window=20).mean()
+    df['SMA_50'] = df['close'].rolling(window=50).mean()
+    
+    # Exponential Moving Average
+    df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()
+    
+    # Price change
+    df['price_change'] = df['close'].diff()
+    df['price_change_pct'] = df['close'].pct_change() * 100
+    
+    # Volume change
+    df['volume_change_pct'] = df['volume'].pct_change() * 100
+    
+    return df
+
+# Main Application
+def main():
+    st.markdown('<p class="main-header">📈 OHLC Data Dashboard</p>', unsafe_allow_html=True)
+    
+    # Load configuration
+    config = load_config()
+    if not config:
+        st.stop()
+    
+    # Initialize API client
+    api_client = OHLCAPIClient(config['base_url'], config['anon_key'])
+    
+    # Sidebar
+    st.sidebar.title("🔧 Configuration")
+    
+    # Mode selection
+    mode = st.sidebar.selectbox(
+        "Select Mode",
+        ["Symbol Analysis", "Data Explorer", "API Testing", "Bulk Data Download"]
+    )
+    
+    st.sidebar.markdown("---")
+    
+    # MODE 1: Symbol Analysis
+    if mode == "Symbol Analysis":
+        st.header("Symbol Analysis")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            symbol = st.text_input("Enter Symbol", value="AAPL", help="Enter stock symbol")
+        
+        with col2:
+            limit = st.number_input("Number of records", min_value=10, max_value=1000, value=100)
+        
+        if st.button("Fetch Data", type="primary"):
+            with st.spinner(f"Fetching data for {symbol}..."):
+                result = api_client.get_symbol_data(symbol, limit)
+                
+                if result:
+                    df = process_ohlc_dataframe(result)
+                    
+                    if df is not None and not df.empty:
+                        # Calculate indicators
+                        df = calculate_technical_indicators(df)
+                        
+                        # Store in session state
+                        st.session_state['current_df'] = df
+                        st.session_state['current_symbol'] = symbol
+                        
+                        # Display latest data
+                        latest = df.iloc[-1]
+                        
+                        st.subheader("Latest Data")
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        with col1:
+                            st.metric("Close", f"${latest['close']:.2f}", 
+                                     f"{latest['price_change_pct']:.2f}%")
+                        with col2:
+                            st.metric("Open", f"${latest['open']:.2f}")
+                        with col3:
+                            st.metric("High", f"${latest['high']:.2f}")
+                        with col4:
+                            st.metric("Low", f"${latest['low']:.2f}")
+                        with col5:
+                            st.metric("Volume", f"{latest['volume']:,.0f}")
+                        
+                        # Candlestick chart
+                        st.plotly_chart(create_candlestick_chart(df, symbol), use_container_width=True)
+                        
+                        # Technical indicators
+                        st.subheader("Technical Indicators")
+                        fig_indicators = go.Figure()
+                        
+                        fig_indicators.add_trace(go.Scatter(
+                            x=df['date'], y=df['close'],
+                            name='Close Price', line=dict(color='blue', width=2)
+                        ))
+                        fig_indicators.add_trace(go.Scatter(
+                            x=df['date'], y=df['SMA_20'],
+                            name='SMA 20', line=dict(color='orange', width=1, dash='dash')
+                        ))
+                        fig_indicators.add_trace(go.Scatter(
+                            x=df['date'], y=df['SMA_50'],
+                            name='SMA 50', line=dict(color='red', width=1, dash='dash')
+                        ))
+                        
+                        fig_indicators.update_layout(
+                            title='Price with Moving Averages',
+                            xaxis_title='Date',
+                            yaxis_title='Price',
+                            height=400,
+                            hovermode='x unified'
+                        )
+                        
+                        st.plotly_chart(fig_indicators, use_container_width=True)
+                        
+                        # Data table
+                        st.subheader("Raw Data")
+                        st.dataframe(
+                            df[['date', 'open', 'high', 'low', 'close', 'volume']].tail(20),
+                            use_container_width=True
+                        )
+                        
+                        # Download button
+                        csv = df.to_csv(index=False)
+                        st.download_button(
+                            label="Download Data as CSV",
+                            data=csv,
+                            file_name=f"{symbol}_ohlc_data.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.warning(f"No data found for symbol: {symbol}")
+    
+    # MODE 2: Data Explorer
+    elif mode == "Data Explorer":
+        st.header("Data Explorer")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            symbol_filter = st.text_input("Symbol (optional)", placeholder="e.g., AAPL")
+        
+        with col2:
+            start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
+        
+        with col3:
+            end_date = st.date_input("End Date", value=datetime.now())
+        
+        col4, col5 = st.columns(2)
+        with col4:
+            limit = st.number_input("Limit", min_value=10, max_value=5000, value=500)
+        with col5:
+            offset = st.number_input("Offset", min_value=0, value=0)
+        
+        if st.button("Search", type="primary"):
+            with st.spinner("Searching database..."):
+                result = api_client.get_ohlc_data(
+                    symbol=symbol_filter if symbol_filter else None,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    limit=limit,
+                    offset=offset
+                )
+                
+                if result:
+                    df = process_ohlc_dataframe(result)
+                    
+                    if df is not None and not df.empty:
+                        st.success(f"Found {len(df)} records")
+                        
+                        # Summary statistics
+                        st.subheader("Summary Statistics")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("Total Records", len(df))
+                        with col2:
+                            st.metric("Unique Symbols", df['symbol'].nunique())
+                        with col3:
+                            st.metric("Date Range", f"{df['date'].min().date()} to {df['date'].max().date()}")
+                        
+                        # Symbol distribution
+                        st.subheader("Symbol Distribution")
+                        symbol_counts = df['symbol'].value_counts().head(10)
+                        fig_dist = go.Figure(data=[
+                            go.Bar(x=symbol_counts.index, y=symbol_counts.values)
+                        ])
+                        fig_dist.update_layout(
+                            title='Top 10 Symbols by Record Count',
+                            xaxis_title='Symbol',
+                            yaxis_title='Count',
+                            height=400
+                        )
+                        st.plotly_chart(fig_dist, use_container_width=True)
+                        
+                        # Data preview
+                        st.subheader("Data Preview")
+                        st.dataframe(df, use_container_width=True)
+                        
+                        # Download
+                        csv = df.to_csv(index=False)
+                        st.download_button(
+                            label="Download Results as CSV",
+                            data=csv,
+                            file_name=f"ohlc_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.warning("No data found matching your criteria")
+    
+    # MODE 3: API Testing
+    elif mode == "API Testing":
+        st.header("API Testing")
+        
+        endpoint = st.selectbox(
+            "Select Endpoint",
+            [
+                "GET /ohlc-data (All Data)",
+                "GET /ohlc-data/:id (By ID)",
+                "GET /ohlc-data/symbol/:symbol (By Symbol)",
+                "GET /ohlc-data/latest/:symbol (Latest)"
+            ]
+        )
+        
+        if "All Data" in endpoint:
+            st.subheader("Test: Get All OHLC Data")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                test_symbol = st.text_input("Symbol (optional)")
+                test_limit = st.number_input("Limit", value=10, min_value=1, max_value=100)
+            with col2:
+                test_start = st.date_input("Start Date (optional)", value=None)
+                test_end = st.date_input("End Date (optional)", value=None)
+            
+            if st.button("Test API Call"):
+                with st.spinner("Making API call..."):
+                    result = api_client.get_ohlc_data(
+                        symbol=test_symbol if test_symbol else None,
+                        start_date=test_start.isoformat() if test_start else None,
+                        end_date=test_end.isoformat() if test_end else None,
+                        limit=test_limit
+                    )
+                    
+                    st.subheader("Response")
+                    st.json(result)
+        
+        elif "By ID" in endpoint:
+            st.subheader("Test: Get OHLC by ID")
+            
+            record_id = st.number_input("Record ID", min_value=1, value=1)
+            
+            if st.button("Test API Call"):
+                with st.spinner("Making API call..."):
+                    result = api_client.get_ohlc_by_id(record_id)
+                    
+                    st.subheader("Response")
+                    st.json(result)
+        
+        elif "By Symbol" in endpoint:
+            st.subheader("Test: Get Symbol Data")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                test_symbol = st.text_input("Symbol", value="AAPL")
+            with col2:
+                test_limit = st.number_input("Limit", value=50, min_value=1, max_value=1000)
+            
+            if st.button("Test API Call"):
+                with st.spinner("Making API call..."):
+                    result = api_client.get_symbol_data(test_symbol, test_limit)
+                    
+                    st.subheader("Response")
+                    st.json(result)
+        
+        else:  # Latest
+            st.subheader("Test: Get Latest OHLC")
+            
+            test_symbol = st.text_input("Symbol", value="AAPL")
+            
+            if st.button("Test API Call"):
+                with st.spinner("Making API call..."):
+                    result = api_client.get_latest_ohlc(test_symbol)
+                    
+                    st.subheader("Response")
+                    st.json(result)
+    
+    # MODE 4: Bulk Data Download
+    elif mode == "Bulk Data Download":
+        st.header("Bulk Data Download")
+        
+        st.info("Download large datasets in batches")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            bulk_symbol = st.text_input("Symbol (leave empty for all)", placeholder="Optional")
+            start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=365))
+        with col2:
+            total_records = st.number_input("Total Records to Download", min_value=100, max_value=50000, value=1000)
+            batch_size = st.number_input("Batch Size", min_value=100, max_value=1000, value=500)
+        
+        end_date = st.date_input("End Date", value=datetime.now())
+        
+        if st.button("Start Download", type="primary"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            all_data = []
+            offset = 0
+            
+            while offset < total_records:
+                current_batch = min(batch_size, total_records - offset)
+                
+                status_text.text(f"Downloading records {offset} to {offset + current_batch}...")
+                
+                result = api_client.get_ohlc_data(
+                    symbol=bulk_symbol if bulk_symbol else None,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    limit=current_batch,
+                    offset=offset
+                )
+                
+                if result and 'data' in result and result['data']:
+                    all_data.extend(result['data'])
+                    offset += len(result['data'])
+                    
+                    progress = min(offset / total_records, 1.0)
+                    progress_bar.progress(progress)
+                    
+                    if len(result['data']) < current_batch:
+                        # No more data available
+                        break
+                else:
+                    break
+            
+            if all_data:
+                df = pd.DataFrame(all_data)
+                st.success(f"Successfully downloaded {len(df)} records!")
+                
+                # Preview
+                st.dataframe(df.head(50), use_container_width=True)
+                
+                # Download
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Download Complete Dataset as CSV",
+                    data=csv,
+                    file_name=f"ohlc_bulk_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
             else:
-                st.session_state["user_session"] = None
-                st.session_state["user_id"] = None
-        except Exception as e:
-            st.session_state["user_session"] = None
-            st.session_state["user_id"] = None
-            # print(f"Error refreshing Supabase session: {e}") # Uncomment for debugging
+                st.warning("No data downloaded")
 
-    _refresh_supabase_session()
-
-    if st.session_state["user_session"]:
-        st.success(f"Logged into Supabase as: {st.session_state['user_session'].user.email}")
-        if st.button("Logout from Supabase", key="supabase_logout_btn"):
-            try:
-                if supabase:
-                    supabase.auth.sign_out()
-                _refresh_supabase_session()
-                st.sidebar.success("Logged out from Supabase.")
-                st.rerun()
-            except Exception as e:
-                st.sidebar.error(f"Error logging out: {e}")
-    else:
-        with st.form("supabase_auth_form"):
-            st.markdown("##### Email/Password Login/Sign Up")
-            email = st.text_input("Email", key="supabase_email_input", help="Your email for Supabase authentication.")
-            password = st.text_input("Password", type="password", key="supabase_password_input", help="Your password for Supabase authentication.")
-
-            col_auth1, col_auth2 = st.columns(2)
-            with col_auth1:
-                login_submitted = st.form_submit_button("Login")
-            with col_auth2:
-                signup_submitted = st.form_submit_button("Sign Up")
-
-            if login_submitted:
-                if email and password:
-                    try:
-                        with st.spinner("Logging in..."):
-                            if supabase:
-                                response = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                        _refresh_supabase_session()
-                        st.success("Login successful! Welcome.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Login failed: {e}")
-                else:
-                    st.warning("Please enter both email and password for login.")
-
-            if signup_submitted:
-                if email and password:
-                    try:
-                        with st.spinner("Signing up..."):
-                            if supabase:
-                                response = supabase.auth.sign_up({"email": email, "password": password})
-                        _refresh_supabase_session()
-                        st.success("Sign up successful! Please check your email to confirm your account.")
-                        st.info("After confirming your email, you can log in.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Sign up failed: {e}")
-                else:
-                    st.warning("Please enter both email and password for sign up.")
-
-    st.markdown("---")
-    st.markdown("### 3. Broker Data Fetching & Auto Redirect")
-    if st.session_state["kite_access_token"] and st.session_state["user_session"] and supabase:
-        st.success("Kite and Supabase Authenticated. Ready to Fetch Broker Data.")
-
-        if st.button("Fetch & Save Profile Data", key="fetch_save_broker_data_btn"):
-            try:
-                # Re-authenticate to ensure token validity in this context
-                kite_client_authenticated = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
-                if not kite_client_authenticated:
-                    st.error("Kite client not authenticated or token invalid. Please re-login.")
-                    st.stop()
-
-                with st.spinner("Fetching profile and margin data..."):
-                    profile_data = kite_client_authenticated.profile()
-                    margins_data = kite_client_authenticated.margins()
-
-                user_profile_info = {
-                    "user_id": st.session_state["user_id"],
-                    "email": profile_data.get("email"),
-                    "user_name": profile_data.get("user_name"),
-                    "broker": "KiteConnect",
-                    # Use safe_get_numeric with a default of 0.0 for margins
-                    "funds_available_equity_live": safe_get_numeric(margins_data.get("equity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
-                    "funds_utilized_equity": safe_get_numeric(margins_data.get("equity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
-                    "funds_available_commodity_live": safe_get_numeric(margins_data.get("commodity", {}).get("available", {}), "live_balance", default_value_if_none_or_error=0.0),
-                    "funds_utilized_commodity": safe_get_numeric(margins_data.get("commodity", {}).get("utilised", {}), "overall", default_value_if_none_or_error=0.0),
-                    "fetched_at": datetime.now().isoformat()
-                }
-
-                # Save to Supabase
-                existing_profile_query = supabase.table("user_profiles").select("id").eq("user_id", st.session_state["user_id"]).execute()
-
-                if existing_profile_query.data:
-                    profile_id_to_update = existing_profile_query.data[0]['id']
-                    update_response = supabase.table("user_profiles").update(user_profile_info).eq("id", profile_id_to_update).execute()
-                    # FIX: Check for success by verifying that .data is populated.
-                    if update_response.data:
-                        st.success("User profile and fund data updated successfully in Supabase!")
-                    else:
-                        st.error(f"Failed to update user profile. Response: {update_response}")
-                else:
-                    insert_response = supabase.table("user_profiles").insert(user_profile_info).execute()
-                    # FIX: Check for success by verifying that .data is populated.
-                    if insert_response.data:
-                        st.success("User profile and fund data saved successfully to Supabase!")
-                    else:
-                        st.error(f"Failed to save user profile. Response: {insert_response}")
-
-                # Fetch and save order history
-                with st.spinner("Fetching order and trade history..."):
-                    try:
-                        order_history = kite_client_authenticated.orders()
-                        trades_history = kite_client_authenticated.trades()
-
-                        if order_history:
-                            for order in order_history:
-                                # Process numerical fields carefully
-                                order_quantity = safe_get_numeric(order, "quantity", default_value_if_none_or_error=0)
-                                if not isinstance(order_quantity, int): # Ensure quantity is an integer
-                                    order_quantity = int(order_quantity) if order_quantity is not None else 0
-
-                                order_price_raw = order.get("price")
-                                order_price = None if order_price_raw is None else safe_get_numeric(order, "price", default_value_if_none_or_error=0.0)
-
-                                order_trigger_price_raw = order.get("trigger_price")
-                                order_trigger_price = None if order_trigger_price_raw is None else safe_get_numeric(order, "trigger_price", default_value_if_none_or_error=0.0)
-
-                                order_data = {
-                                    "user_id": st.session_state["user_id"],
-                                    "order_id": order["order_id"],
-                                    "parent_order_id": order.get("parent_order_id"),
-                                    "status": order["status"],
-                                    "symbol": order.get("tradingsymbol"),
-                                    "exchange": order["exchange"],
-                                    "order_type": order["order_type"],
-                                    "variety": order["variety"],
-                                    "validity": order["validity"],
-                                    "transaction_type": order["transaction_type"],
-                                    "quantity": order_quantity,
-                                    "price": order_price,
-                                    "trigger_price": order_trigger_price,
-                                    "placed_at": order["order_timestamp"],
-                                    "product": order["product"],
-                                    "created_at": datetime.now().isoformat()
-                                }
-
-                                # Check if order already exists before inserting/updating
-                                existing_order_query = supabase.table("order_history").select("id").eq("order_id", order_data["order_id"]).execute()
-                                if existing_order_query.data:
-                                    update_order_response = supabase.table("order_history").update(order_data).eq("order_id", order_data["order_id"]).execute()
-                                    # FIX: Robustly check for failure (if .data is empty)
-                                    if not update_order_response.data:
-                                        st.warning(f"Could not update order {order_data['order_id']}.")
-                                else:
-                                    insert_order_response = supabase.table("order_history").insert(order_data).execute()
-                                    # FIX: Robustly check for failure (if .data is empty)
-                                    if not insert_order_response.data:
-                                        st.warning(f"Could not insert order {order_data['order_id']}.")
-                            st.success(f"Processed {len(order_history)} orders. Check Supabase for details.")
-
-                        if trades_history:
-                            for trade in trades_history:
-                                # Process numerical fields carefully
-                                trade_quantity = safe_get_numeric(trade, "quantity", default_value_if_none_or_error=0)
-                                if not isinstance(trade_quantity, int):
-                                    trade_quantity = int(trade_quantity) if trade_quantity is not None else 0
-
-                                trade_price_raw = trade.get("price")
-                                trade_price = None if trade_price_raw is None else safe_get_numeric(trade, "price", default_value_if_none_or_error=0.0)
-
-                                trade_data = {
-                                    "user_id": st.session_state["user_id"],
-                                    "trade_id": trade["trade_id"],
-                                    "order_id": trade["order_id"],
-                                    "symbol": trade.get("tradingsymbol"),
-                                    "exchange": trade["exchange"],
-                                    "transaction_type": trade["transaction_type"],
-                                    "quantity": trade_quantity,
-                                    "price": trade_price,
-                                    "executed_at": trade["execution_time"],
-                                    "product": trade["product"],
-                                    "created_at": datetime.now().isoformat()
-                                }
-
-                                # Check if trade already exists before inserting/updating
-                                existing_trade_query = supabase.table("trade_history").select("id").eq("trade_id", trade_data["trade_id"]).execute()
-                                if existing_trade_query.data:
-                                    update_trade_response = supabase.table("trade_history").update(trade_data).eq("trade_id", trade_data["trade_id"]).execute()
-                                    # FIX: Robustly check for failure (if .data is empty)
-                                    if not update_trade_response.data:
-                                        st.warning(f"Could not update trade {trade_data['trade_id']}.")
-                                else:
-                                    insert_trade_response = supabase.table("trade_history").insert(trade_data).execute()
-                                    # FIX: Robustly check for failure (if .data is empty)
-                                    if not insert_trade_response.data:
-                                        st.warning(f"Could not insert trade {trade_data['trade_id']}.")
-                            st.success(f"Processed {len(trades_history)} trades. Check Supabase for details.")
-
-                        st.session_state["broker_data_fetched_and_saved"] = True
-
-                    except Exception as e:
-                        st.error(f"Error fetching or saving order/trade history: {e}")
-
-            except Exception as e:
-                st.error(f"An error occurred during data fetching or saving: {e}")
-    else:
-        st.info("Please login to Kite and Supabase to enable Broker Data Fetching.")
-
-    st.markdown("---")
-    st.markdown("### 4. Auto Redirect")
-    st.caption(f"Configured redirect URL: **{AUTO_REDIRECT_URL}**")
-
-    if st.session_state.get("broker_data_fetched_and_saved"):
-        st.info("Data fetched and saved. Redirecting in 5 seconds...")
-        # Using markdown to inject JavaScript for redirection
-        st.markdown(f'<script>setTimeout(() => {{window.location.href = "{AUTO_REDIRECT_URL}";}}, 5000);</script>', unsafe_allow_html=True)
-    else:
-        st.info("Auto-redirect will occur after successful data fetch and save.")
-
-
-# --- Authenticated KiteConnect client (used by main tabs) ---
-k = get_authenticated_kite_client(KITE_CREDENTIALS["api_key"], st.session_state["kite_access_token"])
-
-# --- Tab Definitions ---
-# Dynamically create tabs based on authentication status
-tabs_list = ["Dashboard"]
-if k and st.session_state["user_session"] and supabase:
-    tabs_list.extend([
-        "Portfolio", "Orders", "Market & Historical", "Machine Learning Analysis",
-        "Risk & Stress Testing", "Performance Analysis", "Multi-Asset Analysis",
-        "Custom Index", "Websocket (stream)", "Instruments Utils"
-    ])
-
-tabs = st.tabs(tabs_list)
-
-# Assign tab objects for easier access
-tab_dashboard = tabs[0]
-tab_portfolio = tabs[1] if len(tabs) > 1 else None
-tab_orders = tabs[2] if len(tabs) > 2 else None
-tab_market = tabs[3] if len(tabs) > 3 else None
-tab_ml = tabs[4] if len(tabs) > 4 else None
-tab_risk = tabs[5] if len(tabs) > 5 else None
-tab_performance = tabs[6] if len(tabs) > 6 else None
-tab_multi_asset = tabs[7] if len(tabs) > 7 else None
-tab_custom_index = tabs[8] if len(tabs) > 8 else None
-tab_ws = tabs[9] if len(tabs) > 9 else None
-tab_inst = tabs[10] if len(tabs) > 10 else None
-
-
-# --- Tab Rendering Functions ---
-# Placeholder functions for each tab's content.
-
-def render_dashboard_tab(kite_client: KiteConnect | None, supabase_client: Client | None):
-    st.header("Dashboard")
-    if not kite_client or not st.session_state["user_session"] or not supabase_client:
-        st.info("Please login to Kite and Supabase to view the dashboard.")
-        return
-
-    st.success("Welcome! You are logged in.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Broker Account Summary")
-        try:
-            profile = kite_client.profile()
-            margins = kite_client.margins()
-            st.write(f"**User Name:** {profile.get('user_name', 'N/A')}")
-            st.write(f"**Email:** {profile.get('email', 'N/A')}")
-            st.write(f"**Equity Available Margin:** ₹{safe_get_numeric(margins.get('equity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
-            st.write(f"**Commodity Available Margin:** ₹{safe_get_numeric(margins.get('commodity', {}).get('available', {}), 'live_balance', default_value_if_none_or_error=0.0):,.2f}")
-        except Exception as e:
-            st.error(f"Could not fetch broker details: {e}")
-
-    with col2:
-        st.subheader("Supabase Account Info")
-        st.write(f"**Supabase User ID:** {st.session_state['user_id']}")
-        st.write(f"**Supabase Email:** {st.session_state['user_session'].user.email}")
-
-def render_portfolio_tab(kite_client: KiteConnect | None):
-    st.header("Portfolio")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase to view Portfolio.")
-        return
-    st.write("Portfolio details would be displayed here.")
-
-def render_orders_tab(kite_client: KiteConnect | None):
-    st.header("Orders")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase to manage Orders.")
-        return
-    st.write("Order management functionalities would be here.")
-
-def render_market_historical_tab(kite_client: KiteConnect | None):
-    st.header("Market & Historical")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase to access Market Data.")
-        return
-    st.write("Market data and historical charting would be here.")
-
-def render_ml_analysis_tab(kite_client: KiteConnect | None):
-    st.header("Machine Learning Analysis")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase for ML Analysis.")
-        return
-    st.write("ML-driven analysis tools would be here.")
-
-def render_risk_stress_testing_tab(kite_client: KiteConnect | None):
-    st.header("Risk & Stress Testing")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase for Risk Analysis.")
-        return
-    st.write("Risk assessment and stress testing tools would be here.")
-
-def render_performance_analysis_tab(kite_client: KiteConnect | None):
-    st.header("Performance Analysis")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase for Performance Analysis.")
-        return
-    st.write("Performance metrics and benchmarking would be here.")
-
-def render_multi_asset_analysis_tab(kite_client: KiteConnect | None):
-    st.header("Multi-Asset Analysis")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase for Multi-Asset Analysis.")
-        return
-    st.write("Correlation and diversification analysis would be here.")
-
-def render_custom_index_tab(kite_client: KiteConnect | None, supabase_client: Client | None):
-    st.header("Custom Index")
-    if not kite_client or not st.session_state["user_session"] or not supabase_client:
-        st.info("Please login to Kite and Supabase to create and manage Custom Indexes.")
-        return
-    st.write("Custom index creation and management features would be here.")
-
-def render_websocket_tab(kite_client: KiteConnect | None):
-    st.header("Websocket (stream)")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase to use WebSockets.")
-        return
-    st.write("Live data streaming using WebSockets would be here.")
-
-def render_instruments_utils_tab(kite_client: KiteConnect | None):
-    st.header("Instruments Utils")
-    if not kite_client or not st.session_state["user_session"]:
-        st.info("Please login to Kite and Supabase for Instrument Utilities.")
-        return
-    st.write("Instrument lookup and utility functions would be here.")
-
-
-# --- Main Application Logic (Tab Rendering) ---
-
-# Render tabs based on authentication status and availability
-if tab_dashboard:
-    with tab_dashboard:
-        render_dashboard_tab(k, supabase)
-
-if tab_portfolio:
-    with tab_portfolio:
-        render_portfolio_tab(k)
-if tab_orders:
-    with tab_orders:
-        render_orders_tab(k)
-if tab_market:
-    with tab_market:
-        render_market_historical_tab(k)
-if tab_ml:
-    with tab_ml:
-        render_ml_analysis_tab(k)
-if tab_risk:
-    with tab_risk:
-        render_risk_stress_testing_tab(k)
-if tab_performance:
-    with tab_performance:
-        render_performance_analysis_tab(k)
-if tab_multi_asset:
-    with tab_multi_asset:
-        render_multi_asset_analysis_tab(k)
-if tab_custom_index:
-    with tab_custom_index:
-        render_custom_index_tab(k, supabase)
-if tab_ws:
-    with tab_ws:
-        render_websocket_tab(k)
-if tab_inst:
-    with tab_inst:
-        render_instruments_utils_tab(k)
+if __name__ == "__main__":
+    main()
